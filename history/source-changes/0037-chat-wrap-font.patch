@@ -1,0 +1,39 @@
+diff --git a/src/game/render.c b/src/game/render.c
+index 52f4c7a..222e992 100644
+--- a/src/game/render.c
++++ b/src/game/render.c
+@@ -1579,6 +1579,8 @@ void render_set_textfont(int nr)
+  */
+ void render_display_text(void)
+ {
++	// drawn in the font the lines were wrapped with (the Chat text option), not by GO_LARGE:
++	// a mismatch let the text run past the right edge, under the slider
+ 	int n, m, rn, x, y, pos;
+ 	char buf[256], *bp;
+ 	unsigned short lastcolor = (unsigned short)-1;
+@@ -1599,11 +1601,7 @@ void render_display_text(void)
+ 			if (lastcolor != text[pos].color || text[pos].c < 32) {
+ 				if (bp != buf) {
+ 					*bp = 0;
+-					if (game_options & GO_LARGE) {
+-						x = render_text(x, y, palette[lastcolor], RENDER_TEXT_BIG, buf);
+-					} else {
+-						x = render_text(x, y, palette[lastcolor], 0, buf);
+-					}
++					x = render_text(x, y, palette[lastcolor], textfont == fontc ? RENDER_TEXT_BIG : 0, buf);
+ 				}
+ 				bp = buf;
+ 				lastcolor = text[pos].color;
+@@ -1626,11 +1624,7 @@ void render_display_text(void)
+ 
+ 		if (bp != buf) {
+ 			*bp = 0;
+-			if (game_options & GO_LARGE) {
+-				render_text(x, y, palette[lastcolor], RENDER_TEXT_BIG, buf);
+-			} else {
+-				render_text(x, y, palette[lastcolor], 0, buf);
+-			}
++			render_text(x, y, palette[lastcolor], textfont == fontc ? RENDER_TEXT_BIG : 0, buf);
+ 		}
+ 	}
+ }

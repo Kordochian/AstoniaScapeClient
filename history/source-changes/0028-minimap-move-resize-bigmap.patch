@@ -1,0 +1,1178 @@
+diff -ru a/src/gui/display.c b/src/gui/display.c
+--- a/src/gui/display.c	2026-10-13 03:14:15.448062376 +0000
++++ b/src/gui/display.c	2026-10-13 03:14:15.450008129 +0000
+@@ -1185,7 +1185,7 @@
+     "Deals high damage to adjacent enemies.",
+     "Interact with items. Can be used to take or use an item on the ground, or to drop or give an item on your mouse "
+     "cursor.",
+-    "Cycles between the minimap, the big map and no map.", "Look at characters or items in the world."};
++    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).", "Look at characters or items in the world."};
+ 
+ static int v3_action_skill[MAXACTIONSLOT] = {V3_PERCEPT, V3_FIREBALL, V3_FLASH, V3_FLASH, V3_FREEZE, V3_MAGICSHIELD,
+     V3_BLESS, V3_HEAL, V3_WARCRY, V3_PULSE, V3_FIREBALL, V3_PERCEPT, -1, -1};
+@@ -1208,7 +1208,7 @@
+     "NOOP", "Deals high damage to adjacent enemies.",
+     "Interact with items. Can be used to take or use an item on the ground, or to drop or give an item on your mouse "
+     "cursor.",
+-    "Cycles between the minimap, the big map and no map.", "Look at characters or items in the world."};
++    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).", "Look at characters or items in the world."};
+ 
+ static int v35_action_skill[MAXACTIONSLOT] = {V35_PERCEPT, V35_FIRE, V35_FLASH, V35_FLASH, V35_FREEZE, V35_MAGICSHIELD,
+     V35_BLESS, V35_HEAL, V35_WARCRY, -2, V35_FIRE, V35_PERCEPT, -1, -1};
+diff -ru a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+--- a/src/gui/gui_buttons.c	2026-10-13 03:14:15.443972329 +0000
++++ b/src/gui/gui_buttons.c	2026-10-13 03:14:15.446285156 +0000
+@@ -1342,8 +1342,8 @@
+ 		return;
+ 	}
+ 
+-	if (options_over(mousex, mousey) || questwin_over(mousex, mousey)) {
+-		// the settings and questlog windows take the mouse while it is over them
++	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || minimap_over(mousex, mousey)) {
++		// the settings and questlog windows, the minimap and the big map take the mouse while it is over them
+ 		butsel = invsel = weasel = consel = sklsel = sklsel2 = telsel = helpsel = colsel = skl_look_sel = questsel =
+ 		    actsel = -1;
+ 		mapsel = itmsel = chrsel = MAXMN;
+diff -ru a/src/gui/gui_input.c b/src/gui/gui_input.c
+--- a/src/gui/gui_input.c	2026-10-13 03:14:15.435339234 +0000
++++ b/src/gui/gui_input.c	2026-10-13 03:14:15.438744409 +0000
+@@ -320,6 +320,16 @@
+ 		return;
+ 	}
+ 
++	// the big map window and the minimap (dragged, resized, zoomed with the wheel)
++	if (what != SDL_MOUM_NONE && minimap_mouse(what, mousex, mousey, local_y)) {
++		if (what == SDL_MOUM_LUP) {
++			vk_lbut = 0;
++		} else if (what == SDL_MOUM_RUP) {
++			vk_rbut = 0;
++		}
++		return;
++	}
++
+ 	// interface panels are dragged by their title strip
+ 	if (what != SDL_MOUM_NONE && panels_mouse(what, mousex, mousey)) {
+ 		if (what == SDL_MOUM_LUP) {
+@@ -350,6 +360,9 @@
+ 		if (panels_mouse(SDL_MOUM_NONE, mousex, mousey)) {
+ 			break;
+ 		}
++		if (minimap_mouse(SDL_MOUM_NONE, mousex, mousey, 0)) {
++			break;
++		}
+ 
+ 		options_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 		questwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+diff -ru a/src/gui/gui_private.h b/src/gui/gui_private.h
+--- a/src/gui/gui_private.h	2026-10-13 03:14:15.451702391 +0000
++++ b/src/gui/gui_private.h	2026-10-13 03:14:15.453413592 +0000
+@@ -606,6 +606,13 @@
+ void display_minimap(void);
+ void minimap_update(void);
+ void minimap_display_hover(int x, int y);
++int minimap_mouse(int what, int x, int y, int delta);
++int minimap_over(int x, int y);
++int minimap_load_setting(const char *key, const char *val);
++void minimap_save_settings(void *fp); // FILE *
++int minimap_shown(void);
++void minimap_set_shown(int onoff);
++void minimap_reset_layout(void);
+ void dots_update(void);
+ int dots_level_x(void);
+ int dots_level_y(void);
+diff -ru a/src/gui/hover.c b/src/gui/hover.c
+--- a/src/gui/hover.c	2026-10-13 03:14:15.440479295 +0000
++++ b/src/gui/hover.c	2026-10-13 03:14:15.442235007 +0000
+@@ -48,6 +48,10 @@
+ 	if (options_over(mousex, mousey) || questwin_over(mousex, mousey)) {
+ 		return;
+ 	}
++	if (minimap_over(mousex, mousey)) {
++		minimap_display_hover(mousex, mousey);
++		return;
++	}
+ 
+ 	// hover texts of the panels: tested in each panel's layout, drawn at the mouse
+ 	mx = pnl_mx(PNL_STATUS);
+diff -ru a/src/gui/minimap.c b/src/gui/minimap.c
+--- a/src/gui/minimap.c	2026-10-13 03:14:15.426073094 +0000
++++ b/src/gui/minimap.c	2026-10-13 03:14:15.427845479 +0000
+@@ -3,7 +3,10 @@
+  *
+  * Minimap
+  *
+- *
++ * The round minimap can be dragged to any spot, resized by its grip (bottom right) and zoomed with
++ * the mouse wheel. A click on it, the Map action key (M) or Ctrl+Shift+M opens the big map: a
++ * window showing everything explored in the current area, which can be dragged, resized, zoomed
++ * and panned. Positions and sizes are kept in settings.ini.
+  */
+ 
+ #include <math.h>
+@@ -19,10 +22,13 @@
+ #include "sdl/sdl.h"
+ #include "lib/cjson/cJSON.h"
+ 
+-#define MINIMAP           40
++#define MINIMAP           40 // default radius of the round minimap, in GUI pixels
++#define MM_MIN_R          30 // radius limits when resizing
++#define MM_MAX_R          200
++#define MM_MAX_ZOOM       4 // GUI pixels per tile on the minimap: 1 to 4
++#define MMTEX             (MM_MAX_R * 2) // minimap texture size in tiles
+ #define MAXMAP            1024 // map positions kept per area (server areas are up to 1024x1024)
+-#define OLDMAP            256 // size of the old areas and of the map window on screen
+-#define MAPWIN            256
++#define OLDMAP            256 // size of the old areas
+ #define IRGBA(r, g, b, a) (((uint32_t)(a) << 24) | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 0))
+ 
+ #define MAPPIX_UNKNOWN 0
+@@ -32,16 +38,18 @@
+ #define MAPPIX_EMPTY   4
+ #define MAPPIX_USE     5
+ 
+-static int sx, sy, visible, mx, my, update1, update2, update3, orx, ory, rewrite_cnt;
++static int update1, update2, update3, orx, ory, rewrite_cnt;
+ 
+ static unsigned char _mmap[MAXMAP * MAXMAP];
+ static unsigned short map_poi_idx[MAXMAP * MAXMAP];
+ static unsigned char load_buf[MAXMAP * MAXMAP], load_buf2[MAXMAP * MAXMAP]; // file buffers (too big for the stack)
+ 
+-static uint32_t mapix1[MAPWIN * MAPWIN];
++// big map: the whole area is kept in one texture (maptex1); update1 = rebuild all of it,
++// otherwise only the changed rectangle is sent
++static uint32_t mapix1[MAXMAP * MAXMAP];
++static int dirty_x0 = MAXMAP, dirty_y0 = MAXMAP, dirty_x1 = -1, dirty_y1 = -1;
+ static int known_w, known_h; // highest known position + 1, decides between old 256 and big map handling
+-static int tex_bx = -1, tex_by = -1; // part of the map currently in maptex1
+-static uint32_t mapix2[MINIMAP * MINIMAP * 4];
++static uint32_t mapix2[MMTEX * MMTEX];
+ 
+ #define MAXSAVEMAP 100
+ static int mapnr = -1;
+@@ -52,7 +60,12 @@
+ 
+ static int map_poi_load(void);
+ 
+-// size of the area the map window can scroll over: 256 for the old areas, so they look as before
++static int clampi(int v, int lo, int hi)
++{
++	return v < lo ? lo : (v > hi ? hi : v);
++}
++
++// size of the area the big map can show: 256 for the old areas
+ static int map_ext(void)
+ {
+ 	if (known_w > OLDMAP || known_h > OLDMAP || originx >= OLDMAP || originy >= OLDMAP) {
+@@ -61,20 +74,6 @@
+ 	return OLDMAP;
+ }
+ 
+-// left/top of a window of the given size around pos, kept inside the area
+-static int win_base(int pos, int half, int size)
+-{
+-	int b = pos - half;
+-
+-	if (b > map_ext() - size) {
+-		b = map_ext() - size;
+-	}
+-	if (b < 0) {
+-		b = 0;
+-	}
+-	return b;
+-}
+-
+ static void map_known_reset(void)
+ {
+ 	int i;
+@@ -163,14 +162,118 @@
+ 
+ SDL_Texture *maptex1 = NULL, *maptex2 = NULL;
+ 
+-// Position the map windows at the top right of the map area
+-void minimap_layout(void)
++// ----- layout and settings -----
++
++// round minimap: radius and zoom (GUI pixels per tile); position saved as distance from the
++// right edge and from the top (-1: default spot at the top right of the map)
++static int mm_shown = 1, mm_r = MINIMAP, mm_zoom = 1, mm_rx = -1, mm_ty = -1;
++static int mx, my; // top left of the minimap's square on screen
++static int mm_press = 0, mm_drag = 0, mm_size = 0, mm_px, mm_py, mm_dx, mm_dy, mm_ox, mm_oy;
++
++// big map window: offset from the centered spot, size, zoom and view center (in tiles)
++#define BW_TITLE 18
++#define BW_FOOT  14
++#define BW_MIN_W 200
++#define BW_MIN_H 160
++static const float bw_zooms[] = {0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f};
++#define BW_ZOOMS ((int)(sizeof(bw_zooms) / sizeof(bw_zooms[0])))
++static int bw_open = 0, bw_dx = 0, bw_dy = 0, bw_w = 540, bw_h = 440, bw_zi = 4;
++static float bw_cx, bw_cy;
++static int bw_follow = 1; // view follows the player until the map is dragged
++static int bw_drag = 0, bw_size = 0, bw_pan = 0, bw_pressed = 0, bw_ax, bw_ay, bw_ox, bw_oy;
++
++enum { B_NONE, B_CLOSE, B_TITLE, B_GRIP, B_MAP, B_BODY };
++
++static int mm_d(void)
+ {
+-	sx = dotx(DOT_MBR) - MAPWIN - 6;
+-	sy = doty(DOT_MTL) + 6;
++	return mm_r * 2;
++}
+ 
+-	mx = dotx(DOT_MBR) - MINIMAP * 2 - 6;
+-	my = doty(DOT_MTL) + 6;
++// tiles from the center to the edge of the minimap
++static int mm_tiles(void)
++{
++	return max(8, mm_r / mm_zoom);
++}
++
++static void mm_place(void)
++{
++	if (mm_rx < 0 || mm_ty < 0) {
++		mx = dotx(DOT_MBR) - mm_d() - 6;
++		my = doty(DOT_MTL) + 6;
++	} else {
++		mx = XRES - mm_rx - mm_d();
++		my = mm_ty;
++	}
++	mx = clampi(mx, 0, max(0, XRES - mm_d() - 1));
++	my = clampi(my, 0, max(0, YRES - mm_d() - 1));
++}
++
++// remember the spot as distance from the right edge, so it stays there when the window grows
++static void mm_store(void)
++{
++	mm_rx = XRES - mx - mm_d();
++	mm_ty = my;
++}
++
++int minimap_load_setting(const char *key, const char *val)
++{
++	if (!strcmp(key, "minimap")) {
++		int s = 1, rx = -1, ty = -1, r = MINIMAP, z = 1;
++		sscanf(val, "%d,%d,%d,%d,%d", &s, &rx, &ty, &r, &z);
++		mm_shown = s ? 1 : 0;
++		mm_rx = rx;
++		mm_ty = ty;
++		mm_r = clampi(r, MM_MIN_R, MM_MAX_R);
++		mm_zoom = clampi(z, 1, MM_MAX_ZOOM);
++		return 1;
++	}
++	if (!strcmp(key, "bigmap")) {
++		int dx = 0, dy = 0, w = 540, h = 440, z = 4;
++		sscanf(val, "%d,%d,%d,%d,%d", &dx, &dy, &w, &h, &z);
++		bw_dx = dx;
++		bw_dy = dy;
++		bw_w = max(BW_MIN_W, w);
++		bw_h = max(BW_MIN_H, h);
++		bw_zi = clampi(z, 0, BW_ZOOMS - 1);
++		return 1;
++	}
++	return 0;
++}
++
++void minimap_save_settings(void *f)
++{
++	FILE *fp = f;
++
++	fprintf(fp, "minimap=%d,%d,%d,%d,%d\n", mm_shown, mm_rx, mm_ty, mm_r, mm_zoom);
++	fprintf(fp, "bigmap=%d,%d,%d,%d,%d\n", bw_dx, bw_dy, bw_w, bw_h, bw_zi);
++}
++
++int minimap_shown(void)
++{
++	return mm_shown;
++}
++
++void minimap_set_shown(int onoff)
++{
++	mm_shown = onoff ? 1 : 0;
++}
++
++// back to the default spot, size and zoom (Settings: Panel layout Reset)
++void minimap_reset_layout(void)
++{
++	mm_rx = mm_ty = -1;
++	mm_r = MINIMAP;
++	mm_zoom = 1;
++	bw_dx = bw_dy = 0;
++	bw_w = 540;
++	bw_h = 440;
++	update2 = 1;
++}
++
++// the window was laid out again: the minimap keeps its distance from the right edge
++void minimap_layout(void)
++{
++	mm_place();
+ }
+ 
+ void minimap_init(void)
+@@ -183,11 +286,10 @@
+ 
+ 	memset(_mmap, 0, sizeof(_mmap));
+ 	known_w = known_h = 0;
+-	visible = 1;
+ 	update1 = update2 = update3 = 1;
+ 
+-	maptex1 = sdl_create_texture(MAPWIN, MAPWIN);
+-	maptex2 = sdl_create_texture(MINIMAP * 2, MINIMAP * 2);
++	maptex1 = sdl_create_texture(MAXMAP, MAXMAP);
++	maptex2 = sdl_create_texture(MMTEX, MMTEX);
+ 
+ 	SDL_SetTextureBlendMode(maptex1, SDL_BLENDMODE_BLEND);
+ 	SDL_SetTextureBlendMode(maptex2, SDL_BLENDMODE_BLEND);
+@@ -196,6 +298,17 @@
+ 	SDL_SetTextureScaleMode(maptex2, SDL_SCALEMODE_NEAREST);
+ }
+ 
++// a map position changed: the big map sends this part again (POIs around it change color too)
++static void mark_dirty(int x, int y)
++{
++	int r = map_poi_idx[x + y * MAXMAP] ? 2 : 0;
++
++	dirty_x0 = min(dirty_x0, max(0, x - r));
++	dirty_y0 = min(dirty_y0, max(0, y - r));
++	dirty_x1 = max(dirty_x1, min(MAXMAP - 1, x + r));
++	dirty_y1 = max(dirty_y1, min(MAXMAP - 1, y + r));
++}
++
+ static void set_pix(int x, int y, unsigned char val)
+ {
+ 	unsigned char val2;
+@@ -211,7 +324,8 @@
+ 
+ 		_mmap[x + y * MAXMAP] = val;
+ 		map_known_add(x, y);
+-		update1 = update2 = update3 = 1;
++		mark_dirty(x, y);
++		update2 = update3 = 1;
+ 	}
+ }
+ 
+@@ -337,70 +451,364 @@
+ 	}
+ }
+ 
+-void display_minimap(void)
++static void draw_grip(int x, int y, unsigned short col)
++{
++	for (int i = 0; i < 3; i++) {
++		render_line(x - 5 - i * 3, y - 3, x - 3, y - 5 - i * 3, col);
++	}
++}
++
++// ----- big map window -----
++
++static int bw_W(void)
++{
++	return min(bw_w, XRES - 1);
++}
++
++static int bw_H(void)
++{
++	return min(bw_h, YRES - 1);
++}
++
++static int bw_x(void)
++{
++	return clampi((XRES - bw_W()) / 2 + bw_dx, 0, XRES - bw_W() - 1);
++}
++
++static int bw_y(void)
++{
++	return clampi((YRES - bw_H()) / 2 - 10 + bw_dy, 0, YRES - bw_H() - 1);
++}
++
++// keep the window where it is on screen after a drag or a size change
++static void bw_store(int x, int y)
++{
++	bw_dx = x - (XRES - bw_W()) / 2;
++	bw_dy = y - ((YRES - bw_H()) / 2 - 10);
++}
++
++// the map inside the window
++static void bw_inner(int *ix, int *iy, int *iw, int *ih)
++{
++	*ix = bw_x() + 4;
++	*iy = bw_y() + BW_TITLE + 2;
++	*iw = bw_W() - 8;
++	*ih = bw_H() - BW_TITLE - BW_FOOT - 4;
++}
++
++static float bw_z(void)
++{
++	return bw_zooms[clampi(bw_zi, 0, BW_ZOOMS - 1)];
++}
++
++// top left tile of the view (may be outside the area)
++static void bw_view(float *left, float *top)
++{
++	int ix, iy, iw, ih;
++	float z = bw_z();
++
++	if (bw_follow) {
++		bw_cx = (float)originx + 0.5f;
++		bw_cy = (float)originy + 0.5f;
++	}
++	bw_inner(&ix, &iy, &iw, &ih);
++	*left = bw_cx - (float)iw / (2.0f * z);
++	*top = bw_cy - (float)ih / (2.0f * z);
++}
++
++static int bw_over(int x, int y)
++{
++	int px = bw_x(), py = bw_y();
++
++	return bw_open && x >= px && x <= px + bw_W() && y >= py && y <= py + bw_H();
++}
++
++static int bw_hit(int x, int y)
++{
++	int px = bw_x(), py = bw_y(), ix, iy, iw, ih;
++
++	if (!bw_over(x, y)) {
++		return B_NONE;
++	}
++	if (x >= px + bw_W() - 18 && x <= px + bw_W() - 4 && y >= py + 2 && y <= py + 15) {
++		return B_CLOSE;
++	}
++	if (y < py + BW_TITLE) {
++		return B_TITLE;
++	}
++	if (x >= px + bw_W() - 10 && y >= py + bw_H() - 10) {
++		return B_GRIP;
++	}
++	bw_inner(&ix, &iy, &iw, &ih);
++	if (x >= ix && x < ix + iw && y >= iy && y < iy + ih) {
++		return B_MAP;
++	}
++	return B_BODY;
++}
++
++// send the changed part of the area to the big map texture
++static void bigmap_upload(void)
++{
++	int x, y, x0, y0, x1, y1, w;
++	SDL_Rect r;
++
++	if (update1) {
++		x0 = y0 = 0;
++		x1 = y1 = MAXMAP - 1;
++		update1 = 0;
++	} else if (dirty_x1 < 0) {
++		return;
++	} else {
++		x0 = dirty_x0;
++		y0 = dirty_y0;
++		x1 = dirty_x1;
++		y1 = dirty_y1;
++	}
++	dirty_x0 = dirty_y0 = MAXMAP;
++	dirty_x1 = dirty_y1 = -1;
++
++	w = x1 - x0 + 1;
++	for (y = y0; y <= y1; y++) {
++		for (x = x0; x <= x1; x++) {
++			mapix1[(x - x0) + (y - y0) * w] = pix_col(x, y);
++		}
++	}
++	r.x = x0;
++	r.y = y0;
++	r.w = w;
++	r.h = y1 - y0 + 1;
++	SDL_UpdateTexture(maptex1, &r, mapix1, w * (int)sizeof(uint32_t));
++}
++
++static void bigmap_display(void)
+ {
+-	int x, y, ix, iy, i;
+-	float dist;
++	int px, py, W, H, ix, iy, iw, ih, hov, ext;
++	float z, left, top, sx0, sy0, sx1, sy1;
+ 	SDL_FRect dr, sr;
+ 
+-	if (game_options & GO_NOMAP) {
++	px = bw_x();
++	py = bw_y();
++	W = bw_W();
++	H = bw_H();
++	hov = (bw_drag || bw_size || bw_pan) ? B_NONE : bw_hit(mousex, mousey);
++
++	render_push_clip();
++	render_set_clip(0, 0, XRES, YRES);
++
++	gui_draw_panel(px, py, W + 1, H + 1, BW_TITLE);
++	render_text(px + W / 2, py + 5, whitecolor, RENDER_ALIGN_CENTER, "Map");
++	render_text(px + W - 11, py + 5, hov == B_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
++	draw_grip(px + W, py + H, hov == B_GRIP || bw_size ? whitecolor : IRGB(20, 16, 8));
++
++	bigmap_upload();
++
++	bw_inner(&ix, &iy, &iw, &ih);
++	z = bw_z();
++	bw_view(&left, &top);
++	ext = map_ext();
++
++	render_rect(ix, iy, ix + iw, iy + ih, IRGB(1, 1, 1));
++
++	// the part of the area inside the view, cut at the area's edges
++	sx0 = max(left, 0.0f);
++	sy0 = max(top, 0.0f);
++	sx1 = min(left + (float)iw / z, (float)ext);
++	sy1 = min(top + (float)ih / z, (float)ext);
++	if (sx1 > sx0 && sy1 > sy0) {
++		sr.x = sx0;
++		sr.y = sy0;
++		sr.w = sx1 - sx0;
++		sr.h = sy1 - sy0;
++		dr.x = ((float)ix + (sx0 - left) * z + (float)x_offset) * (float)sdl_scale;
++		dr.y = ((float)iy + (sy0 - top) * z + (float)y_offset) * (float)sdl_scale;
++		dr.w = sr.w * z * (float)sdl_scale;
++		dr.h = sr.h * z * (float)sdl_scale;
++		sdl_render_copy(maptex1, &sr, &dr);
++	}
++
++	render_set_clip(ix, iy, ix + iw, iy + ih);
++	{
++		int cx = ix + (int)(((float)originx + 0.5f - left) * z);
++		int cy = iy + (int)(((float)originy + 0.5f - top) * z);
++		if (cx >= ix && cx < ix + iw && cy >= iy && cy < iy + ih) {
++			draw_center2(cx, cy);
++		}
++	}
++	render_text(ix + 4, iy + 3, whitecolor, RENDER_TEXT_FRAMED, "N");
++	render_set_clip(0, 0, XRES, YRES);
++
++	render_text(ix, py + H - BW_FOOT + 1, graycolor, RENDER_TEXT_SMALL,
++	    "Wheel: zoom   Drag: move   Right-click: center on you");
++	render_text_fmt(ix + iw, py + H - BW_FOOT + 1, graycolor, RENDER_TEXT_SMALL | RENDER_TEXT_RIGHT, "%d%%",
++	    (int)(z * 100.0f + 0.5f));
++
++	render_pop_clip();
++}
++
++// zoom the big map one step, keeping the tile under (x, y) where it is
++static void bw_zoom_at(int x, int y, int step)
++{
++	int ix, iy, iw, ih, nz = clampi(bw_zi + step, 0, BW_ZOOMS - 1);
++	float left, top, tx, ty, z0, z1;
++
++	if (nz == bw_zi) {
+ 		return;
+ 	}
++	bw_view(&left, &top);
++	bw_inner(&ix, &iy, &iw, &ih);
++	z0 = bw_z();
++	z1 = bw_zooms[nz];
++	if (!bw_follow) {
++		tx = left + (float)(x - ix) / z0;
++		ty = top + (float)(y - iy) / z0;
++		bw_cx = tx - (float)(x - ix) / z1 + (float)iw / (2.0f * z1);
++		bw_cy = ty - (float)(y - iy) / z1 + (float)ih / (2.0f * z1);
++	}
++	bw_zi = nz;
++}
+ 
+-	if (visible & 2) { // display big map
+-		int bx, by;
++static int bigmap_mouse(int what, int x, int y, int delta)
++{
++	int h;
+ 
+-		// the texture holds a MAPWIN x MAPWIN part of the map around the player
+-		bx = win_base(originx, MAPWIN / 2, MAPWIN);
+-		by = win_base(originy, MAPWIN / 2, MAPWIN);
+-		if (bx != tex_bx || by != tex_by) {
+-			tex_bx = bx;
+-			tex_by = by;
+-			update1 = 1;
+-		}
+-
+-		if (update1) {
+-			for (y = 0; y < MAPWIN; y++) {
+-				for (x = 0; x < MAPWIN; x++) {
+-					mapix1[x + y * MAPWIN] = pix_col(x + bx, y + by);
+-				}
++	if (!bw_open) {
++		return 0;
++	}
++
++	switch (what) {
++	case SDL_MOUM_NONE:
++		if (bw_size) {
++			// the top left corner stays where it is while the bottom right follows the mouse
++			bw_w = clampi(x - bw_ax - bw_ox, BW_MIN_W, XRES - 1 - bw_ox);
++			bw_h = clampi(y - bw_ay - bw_oy, BW_MIN_H, YRES - 1 - bw_oy);
++			bw_store(bw_ox, bw_oy);
++			return 1;
++		}
++		if (bw_drag) {
++			bw_dx += x - bw_ax;
++			bw_dy += y - bw_ay;
++			bw_ax = x;
++			bw_ay = y;
++			return 1;
++		}
++		if (bw_pan) {
++			if (bw_pan == 1 && abs(x - bw_ax) + abs(y - bw_ay) < 3) {
++				return 1;
+ 			}
+-			SDL_UpdateTexture(maptex1, NULL, mapix1, MAPWIN * sizeof(uint32_t));
+-			update1 = 0;
++			bw_pan = 2;
++			bw_follow = 0;
++			bw_cx -= (float)(x - bw_ax) / bw_z();
++			bw_cy -= (float)(y - bw_ay) / bw_z();
++			bw_cx = SDL_clamp(bw_cx, 0.0f, (float)map_ext());
++			bw_cy = SDL_clamp(bw_cy, 0.0f, (float)map_ext());
++			bw_ax = x;
++			bw_ay = y;
++			return 1;
+ 		}
++		return 0;
+ 
+-		dr.x = (float)((sx + x_offset) * sdl_scale);
+-		dr.w = (float)(MAPWIN * sdl_scale);
+-		dr.y = (float)((sy + y_offset) * sdl_scale);
+-		dr.h = (float)(MAPWIN * sdl_scale);
+-
+-		if (visible & 1) {
+-			sr.x = 0.0f;
+-			sr.w = (float)MAPWIN;
+-			sr.y = 0.0f;
+-			sr.h = (float)MAPWIN;
+-			sdl_render_copy(maptex1, &sr, &dr);
+-			draw_center(sx + originx - bx, sy + originy - by);
++	case SDL_MOUM_LUP:
++		if (bw_size || bw_drag) {
++			bw_store(bw_x(), bw_y());
++			bw_w = bw_W();
++			bw_h = bw_H();
++			bw_size = bw_drag = 0;
++			options_save();
++			return 1;
++		}
++		if (bw_pan) {
++			bw_pan = 0;
++			return 1;
++		}
++		if (bw_pressed) {
++			if (bw_pressed == B_CLOSE && bw_hit(x, y) == B_CLOSE) {
++				bw_open = 0;
++			}
++			bw_pressed = 0;
++			return 1;
++		}
++		return bw_over(x, y);
++
++	case SDL_MOUM_LDOWN:
++		h = bw_hit(x, y);
++		if (h == B_NONE) {
++			return 0;
++		}
++		if (h == B_GRIP) {
++			bw_ox = bw_x();
++			bw_oy = bw_y();
++			bw_store(bw_ox, bw_oy);
++			bw_size = 1;
++			bw_ax = x - (bw_x() + bw_W());
++			bw_ay = y - (bw_y() + bw_H());
++		} else if (h == B_TITLE) {
++			bw_store(bw_x(), bw_y());
++			bw_drag = 1;
++			bw_ax = x;
++			bw_ay = y;
++		} else if (h == B_MAP) {
++			bw_pan = 1;
++			bw_ax = x;
++			bw_ay = y;
+ 		} else {
+-			x = win_base(originx, MAPWIN / 6, MAPWIN / 3);
+-			y = win_base(originy, MAPWIN / 6, MAPWIN / 3);
++			bw_pressed = h;
++		}
++		return 1;
+ 
+-			sr.x = (float)(x - bx);
+-			sr.w = (float)(MAPWIN / 3);
+-			sr.y = (float)(y - by);
+-			sr.h = (float)(MAPWIN / 3);
++	case SDL_MOUM_RUP:
++		if (bw_hit(x, y) == B_MAP) {
++			bw_follow = 1;
++		}
++		return bw_over(x, y);
+ 
+-			sdl_render_copy(maptex1, &sr, &dr);
+-			draw_center2(sx + (originx - x) * 3 + 2, sy + (originy - y) * 3 + 2);
++	case SDL_MOUM_WHEEL:
++		if (!bw_over(x, y)) {
++			return 0;
+ 		}
++		bw_zoom_at(x, y, delta > 0 ? 1 : (delta < 0 ? -1 : 0));
++		options_save();
++		return 1;
++
++	default:
++		return bw_over(x, y);
++	}
++}
+ 
+-		render_line(sx, sy, sx, sy + MAPWIN, 0xffff);
+-		render_line(sx, sy + MAPWIN, sx + MAPWIN, sy + MAPWIN, 0xffff);
+-		render_line(sx + MAPWIN, sy + MAPWIN, sx + MAPWIN, sy, 0xffff);
+-		render_line(sx + MAPWIN, sy, sx, sy, 0xffff);
++// ----- round minimap -----
+ 
+-		render_text(sx + 6, sy + 6, 0xffff, 0, "N");
++static int mm_over_circle(int x, int y)
++{
++	int dx = x - (mx + mm_r), dy = y - (my + mm_r);
++
++	return dx * dx + dy * dy <= mm_r * mm_r;
++}
++
++static int mm_over_grip(int x, int y)
++{
++	return x >= mx + mm_d() - 10 && x <= mx + mm_d() + 2 && y >= my + mm_d() - 10 && y <= my + mm_d() + 2;
++}
++
++static int mm_active(void)
++{
++	return mm_shown && !(game_options & GO_NOMAP);
++}
++
++static int mm_over(int x, int y)
++{
++	if (!mm_active()) {
++		return 0;
+ 	}
++	mm_place();
++	return mm_over_circle(x, y) || (!panels_locked && mm_over_grip(x, y));
++}
++
++static void minimap_round_display(void)
++{
++	int x, y, ix, iy, i, R, d, hov;
++	SDL_FRect dr, sr;
++	SDL_Rect ur;
++
++	mm_place();
+ 
+ 	if (orx != originx || ory != originy) {
+ 		update2 = 1;
+@@ -408,49 +816,173 @@
+ 		ory = originy;
+ 	}
+ 
+-	if (visible == 1) {
+-		if (update2) {
+-			bzero(mapix2, sizeof(mapix2));
+-			for (iy = -MINIMAP; iy < MINIMAP; iy++) {
+-				for (ix = -MINIMAP; ix < MINIMAP; ix++) {
+-					dist = sqrtf((float)(ix * ix + iy * iy));
+-					if (dist > MINIMAP) {
+-						continue;
+-					}
+-
+-					x = originx + ix;
+-					y = originy + iy;
+-
+-					if (x < 0 || x >= MAXMAP || y < 0 || y >= MAXMAP) {
+-						mapix2[MINIMAP + ix + iy * MINIMAP * 2 + MINIMAP * MINIMAP * 2] = IRGBA(25, 25, 25, 255);
+-					} else {
+-						mapix2[MINIMAP + ix + iy * MINIMAP * 2 + MINIMAP * MINIMAP * 2] = pix_col(x, y);
+-					}
++	R = mm_tiles();
++	d = R * 2;
++	if (update2) {
++		bzero(mapix2, sizeof(uint32_t) * (size_t)(d * d));
++		for (iy = -R; iy < R; iy++) {
++			for (ix = -R; ix < R; ix++) {
++				if (ix * ix + iy * iy > R * R) {
++					continue;
++				}
++
++				x = originx + ix;
++				y = originy + iy;
++
++				if (x < 0 || x >= MAXMAP || y < 0 || y >= MAXMAP) {
++					mapix2[(R + ix) + (R + iy) * d] = IRGBA(25, 25, 25, 255);
++				} else {
++					mapix2[(R + ix) + (R + iy) * d] = pix_col(x, y);
+ 				}
+ 			}
+-			SDL_UpdateTexture(maptex2, NULL, mapix2, MINIMAP * 2 * sizeof(uint32_t));
+-			update2 = 0;
+ 		}
++		ur.x = ur.y = 0;
++		ur.w = ur.h = d;
++		SDL_UpdateTexture(maptex2, &ur, mapix2, d * (int)sizeof(uint32_t));
++		update2 = 0;
++	}
++
++	dr.x = (float)((mx + x_offset) * sdl_scale);
++	dr.w = (float)(mm_d() * sdl_scale);
++	dr.y = (float)((my + y_offset) * sdl_scale);
++	dr.h = (float)(mm_d() * sdl_scale);
++
++	sr.x = 0.0f;
++	sr.w = (float)d;
++	sr.y = 0.0f;
++	sr.h = (float)d;
++
++	sdl_render_copy_ex(maptex2, &sr, &dr, 45.0);
++	draw_center(mx + mm_r, my + mm_r);
++
++	hov = mm_drag || mm_size || (!bw_over(mousex, mousey) && mm_over(mousex, mousey));
++	for (i = 0; i < sdl_scale; i++) {
++		sdl_render_circle((mx + mm_r + x_offset) * sdl_scale, (my + mm_r + y_offset) * sdl_scale,
++		    mm_r * sdl_scale + i, 0xffffffff);
++	}
++	render_text(mx + mm_r, my + 4, 0xffff, 0, "N");
++	if (hov && !panels_locked) {
++		draw_grip(mx + mm_d(), my + mm_d(), mm_size || mm_over_grip(mousex, mousey) ? whitecolor : lightgraycolor);
++	}
++}
+ 
+-		dr.x = (float)((mx + x_offset) * sdl_scale);
+-		dr.w = (float)(MINIMAP * 2 * sdl_scale);
+-		dr.y = (float)((my + y_offset) * sdl_scale);
+-		dr.h = (float)(MINIMAP * 2 * sdl_scale);
++void display_minimap(void)
++{
++	if (game_options & GO_NOMAP) {
++		return;
++	}
++
++	if (mm_shown) {
++		minimap_round_display();
++	}
++	if (bw_open) {
++		bigmap_display();
++	}
++}
++
++// Mouse input for the big map window and the round minimap. Returns 1 if the event was used.
++// The minimap is dragged by any point inside it and resized by its grip, unless the panels
++// are locked; a click on it opens the big map, the wheel zooms it.
++int minimap_mouse(int what, int x, int y, int delta)
++{
++	if (game_options & GO_NOMAP) {
++		return 0;
++	}
++
++	if (bigmap_mouse(what, x, y, delta)) {
++		return 1;
++	}
++	if (!mm_active()) {
++		mm_press = mm_drag = mm_size = 0;
++		return 0;
++	}
++	mm_place();
+ 
+-		sr.x = 0.0f;
+-		sr.w = (float)(MINIMAP * 2);
+-		sr.y = 0.0f;
+-		sr.h = (float)(MINIMAP * 2);
++	switch (what) {
++	case SDL_MOUM_NONE:
++		if (mm_size) {
++			// the top left corner stays where it is while the grip follows the mouse
++			int r = max(x - mm_ox - mm_dx, y - mm_oy - mm_dy) / 2;
++			mm_r = clampi(r, MM_MIN_R, MM_MAX_R);
++			mx = mm_ox;
++			my = mm_oy;
++			mm_store();
++			mm_place();
++			update2 = 1;
++			return 1;
++		}
++		if (mm_press && !mm_drag && !panels_locked && abs(x - mm_px) + abs(y - mm_py) >= 3) {
++			mm_drag = 1;
++		}
++		if (mm_drag) {
++			mx = x - mm_dx;
++			my = y - mm_dy;
++			mm_store();
++			mm_place();
++			return 1;
++		}
++		return 0;
+ 
+-		sdl_render_copy_ex(maptex2, &sr, &dr, 45.0);
+-		draw_center(mx + MINIMAP, my + MINIMAP);
++	case SDL_MOUM_LDOWN:
++		if (csprite) {
++			return 0; // an item on the mouse goes to the world below
++		}
++		if (!panels_locked && mm_over_grip(x, y) && !mm_over_circle(x, y)) {
++			mm_size = 1;
++			mm_ox = mx;
++			mm_oy = my;
++			mm_dx = x - (mx + mm_d());
++			mm_dy = y - (my + mm_d());
++			return 1;
++		}
++		if (mm_over_circle(x, y)) {
++			mm_press = 1;
++			mm_px = x;
++			mm_py = y;
++			mm_dx = x - mx;
++			mm_dy = y - my;
++			return 1;
++		}
++		return 0;
+ 
+-		for (i = 0; i < sdl_scale; i++) {
+-			sdl_render_circle((mx + MINIMAP + x_offset) * sdl_scale, (my + MINIMAP + y_offset) * sdl_scale,
+-			    (MINIMAP)*sdl_scale + i, 0xffffffff);
++	case SDL_MOUM_LUP:
++		if (mm_size || mm_drag) {
++			mm_place();
++			mm_store();
++			mm_size = mm_drag = mm_press = 0;
++			options_save();
++			return 1;
++		}
++		if (mm_press) {
++			mm_press = 0;
++			if (mm_over_circle(x, y)) {
++				minimap_toggle();
++			}
++			return 1;
+ 		}
+-		render_text(mx + MINIMAP, my + 4, 0xffff, 0, "N");
++		return 0;
++
++	case SDL_MOUM_WHEEL:
++		if (!mm_over_circle(x, y)) {
++			return 0;
++		}
++		mm_zoom = clampi(mm_zoom + (delta > 0 ? 1 : (delta < 0 ? -1 : 0)), 1, MM_MAX_ZOOM);
++		update2 = 1;
++		options_save();
++		return 1;
++
++	default:
++		return mm_over_circle(x, y);
++	}
++}
++
++// the mouse is over the minimap or the big map: the world below does not react to it
++int minimap_over(int x, int y)
++{
++	if (game_options & GO_NOMAP) {
++		return 0;
+ 	}
++	return bw_over(x, y) || mm_over(x, y) || mm_drag || mm_size || bw_drag || bw_size || bw_pan;
+ }
+ 
+ static void minimap_clearonly(void)
+@@ -480,19 +1012,28 @@
+ 
+ 	_mmap[x + y * MAXMAP] = MAPPIX_EMPTY;
+ 	map_known_add(x, y);
+-	update1 = update2 = update3 = 1;
++	mark_dirty(x, y);
++	update2 = update3 = 1;
+ }
+ 
++// open or close the big map (Map action key, Ctrl+Shift+M, click on the minimap)
+ void minimap_toggle(void)
+ {
+-	visible = (visible + 1) % 4;
++	if (game_options & GO_NOMAP) {
++		return;
++	}
++	bw_open = !bw_open;
++	bw_drag = bw_size = bw_pan = bw_pressed = 0;
++	if (bw_open) {
++		bw_follow = 1;
++	}
+ }
+ 
++// Escape: close the big map
+ void minimap_hide(void)
+ {
+-	if (visible) {
+-		visible = 1;
+-	}
++	bw_open = 0;
++	bw_drag = bw_size = bw_pan = bw_pressed = 0;
+ }
+ 
+ static char *mapname(int i)
+@@ -656,6 +1197,7 @@
+ 
+ 		map_merge(_mmap, load_buf);
+ 		map_known_reset();
++		update1 = update2 = 1;
+ 
+ 		return besti;
+ 	}
+@@ -751,6 +1293,7 @@
+ 		if (cnt) {
+ 			map_update_poi();
+ 		}
++		update1 = update2 = 1;
+ 		break;
+ 	case AIC_CLEAR:
+ 		minimap_clearonly();
+@@ -921,44 +1464,40 @@
+ 	}
+ }
+ 
++
+ void minimap_display_hover(int hx, int hy)
+ {
+ 	int x, y, i;
+ 
+-	if (visible == 1) { // small, round map
+-		double sq = 0.70710678118654752440, dist;
+-		int tmp;
++	if (game_options & GO_NOMAP) {
++		return;
++	}
+ 
+-		x = hx - (mx + MINIMAP);
+-		y = hy - (my + MINIMAP);
++	if (bw_over(hx, hy)) { // big map window
++		int ix, iy, iw, ih;
++		float left, top;
+ 
+-		dist = sqrt((double)(x * x + y * y));
+-		if (dist > MINIMAP) {
++		if (bw_hit(hx, hy) != B_MAP || bw_pan == 2) {
+ 			return;
+ 		}
++		bw_view(&left, &top);
++		bw_inner(&ix, &iy, &iw, &ih);
++		x = (int)floorf(left + (float)(hx - ix) / bw_z());
++		y = (int)floorf(top + (float)(hy - iy) / bw_z());
++	} else if (mm_active() && !mm_drag && !mm_size && (mm_place(), mm_over_circle(hx, hy))) { // small, round map
++		double sq = 0.70710678118654752440;
++		int tmp;
++
++		x = hx - (mx + mm_r);
++		y = hy - (my + mm_r);
+ 
+ 		// Apply clockwise rotation matrix
+-		tmp = (int)(round(x * sq + y * sq));
+-		y = (int)(round(-x * sq + y * sq));
++		tmp = (int)(round((x * sq + y * sq) / mm_zoom));
++		y = (int)(round((-x * sq + y * sq) / mm_zoom));
+ 		x = tmp;
+ 
+ 		x += originx;
+ 		y += originy;
+-	} else if (visible == 2) { // big scaled up map
+-		int ox, oy;
+-
+-		ox = win_base(originx, MAPWIN / 6, MAPWIN / 3);
+-		oy = win_base(originy, MAPWIN / 6, MAPWIN / 3);
+-
+-		x = hx - sx;
+-		y = hy - sy;
+-
+-		x = x / 3 + ox;
+-		y = y / 3 + oy;
+-
+-	} else if (visible == 3) { // big full map
+-		x = hx - sx + win_base(originx, MAPWIN / 2, MAPWIN);
+-		y = hy - sy + win_base(originy, MAPWIN / 2, MAPWIN);
+ 	} else {
+ 		return;
+ 	}
+diff -ru a/src/gui/options.c b/src/gui/options.c
+--- a/src/gui/options.c	2026-10-13 03:14:15.429713225 +0000
++++ b/src/gui/options.c	2026-10-13 03:14:15.431359817 +0000
+@@ -24,7 +24,7 @@
+ 
+ // panel size and layout, in game coordinates
+ #define PW 300
+-#define PH 504
++#define PH 522
+ 
+ #define ROW_SFX   40
+ #define ROW_MUSIC 58
+@@ -36,8 +36,9 @@
+ #define ROW_PANELS 210
+ #define ROW_PSCALE 228 // one row per panel, ZROW_H apart
+ #define ROW_CHAT   410
+-#define ROW_RESET  428
+-#define ROW_NOTE  452
++#define ROW_MINIMAP 428
++#define ROW_RESET  446
++#define ROW_NOTE  470
+ #define ZROW_H     26 // zoom sliders have "Zoom out" / "Zoom in" under their ends
+ 
+ #define CTRL_X 112 // left edge of the sliders and selectors
+@@ -67,6 +68,8 @@
+ 	H_PSCALE,
+ 	H_CHAT_L,
+ 	H_CHAT_R,
++	H_MMAP_L,
++	H_MMAP_R,
+ 	H_RESET,
+ 	H_APPLY,
+ 	H_DONE,
+@@ -207,7 +210,7 @@
+ 			pnl_chat_text = clampi(atoi(val), -1, 1);
+ 		} else if (!strcmp(line, "ui_locked")) {
+ 			panels_locked = atoi(val) ? 1 : 0;
+-		} else {
++		} else if (!minimap_load_setting(line, val)) {
+ 			panels_load_setting(line, val);
+ 		}
+ 	}
+@@ -262,6 +265,7 @@
+ 		fprintf(fp, "chat_text=%d\n", pnl_chat_text);
+ 	}
+ 	panels_save_settings(fp);
++	minimap_save_settings(fp);
+ 	if (have_gfx) {
+ 		fprintf(fp, "display_mode=%s\n", mode_key[clampi(cfg_mode, 0, 2)]);
+ 		if (cfg_mode != DISPMODE_BORDERLESS) {
+@@ -503,6 +507,14 @@
+ 	if (in_box(x, y, cx + SEL_W - 14, py + ROW_CHAT - 2, cx + SEL_W, py + ROW_CHAT + 11)) {
+ 		return H_CHAT_R;
+ 	}
++	if (!(game_options & GO_NOMAP)) {
++		if (in_box(x, y, cx, py + ROW_MINIMAP - 2, cx + 14, py + ROW_MINIMAP + 11)) {
++			return H_MMAP_L;
++		}
++		if (in_box(x, y, cx + SEL_W - 14, py + ROW_MINIMAP - 2, cx + SEL_W, py + ROW_MINIMAP + 11)) {
++			return H_MMAP_R;
++		}
++	}
+ 	if (in_box(x, y, cx, py + ROW_RESET - 3, cx + BTN_W, py + ROW_RESET - 3 + BTN_H)) {
+ 		return H_RESET;
+ 	}
+@@ -640,8 +652,14 @@
+ 		panels_set_chat_text(!panels_chat_text());
+ 		options_save();
+ 		break;
++	case H_MMAP_L:
++	case H_MMAP_R:
++		minimap_set_shown(!minimap_shown());
++		options_save();
++		break;
+ 	case H_RESET:
+ 		panels_reset();
++		minimap_reset_layout();
+ 		options_save();
+ 		break;
+ 	case H_APPLY:
+@@ -996,6 +1014,9 @@
+ 		    hov == H_PSCALE && (dragging == H_PSCALE ? drag_panel : hit_panel) == p, label, NULL);
+ 	}
+ 	draw_selector(ROW_CHAT, "Chat text", panels_chat_text() ? "Large" : "Normal", 1, hov == H_CHAT_L, hov == H_CHAT_R);
++	draw_selector(ROW_MINIMAP, "Minimap",
++	    (game_options & GO_NOMAP) ? "Off (start option)" : (minimap_shown() ? "Shown (drag to move)" : "Hidden"),
++	    !(game_options & GO_NOMAP), hov == H_MMAP_L, hov == H_MMAP_R);
+ 	render_text(px + 16, py + ROW_RESET, textcolor, 0, "Panel layout");
+ 	draw_button(px + CTRL_X, py + ROW_RESET - 3, "Reset", 1, hov == H_RESET);
+ 

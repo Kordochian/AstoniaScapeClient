@@ -1,0 +1,670 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6d810c4..221c609 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -55,7 +55,7 @@ set(MOAC_SOURCES
+     src/sdl/sdl_draw.c src/sdl/sound.c
+     src/game/resource.rc src/helper/helper.c
+     src/gui/dots.c src/gui/display.c src/gui/teleport.c src/gui/color.c src/gui/cmd.c
+-    src/gui/questlog.c src/gui/context.c src/gui/hover.c src/gui/minimap.c src/gui/options.c
++    src/gui/questlog.c src/gui/craftwin.c src/gui/context.c src/gui/hover.c src/gui/minimap.c src/gui/options.c
+     src/gui/panels.c
+     src/modder/sharedmem_windows.c src/game/crash_handler_windows.c
+     src/game/memory_windows.c src/gui/draghack_windows.c src/client/unique_windows.c
+diff --git a/src/client/client.c b/src/client/client.c
+index 7da559b..f1d3fac 100644
+--- a/src/client/client.c
++++ b/src/client/client.c
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+ 
+-#define CLIENT_PROTOCOL_VERSION 5 // 4: server sends DIST 64, 5: skill list + skill XP
++#define CLIENT_PROTOCOL_VERSION 6 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window
+ 
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+diff --git a/src/client/client_private.h b/src/client/client_private.h
+index 00e83a1..b286f5d 100644
+--- a/src/client/client_private.h
++++ b/src/client/client_private.h
+@@ -57,7 +57,7 @@
+ #define SV_PROTOCOL         53
+ #define SV_SKILLDEF         54 // protocol 5: skill list (server skillreg.c)
+ #define SV_SKILLXP          55 // protocol 5: level and XP of one skill
+-#define SV_RESERVED3        56
++#define SV_CRAFTLIST        56 // protocol 6: furnace / anvil recipe list (server skilling.c)
+ #define SV_RESERVED4        57
+ #define SV_MOD1             58
+ #define SV_MOD2             59
+diff --git a/src/client/protocol.c b/src/client/protocol.c
+index 485b1b0..1f18ab9 100644
+--- a/src/client/protocol.c
++++ b/src/client/protocol.c
+@@ -1321,6 +1321,10 @@ void process(unsigned char *buf, int size)
+ 				sv_skillxp(buf);
+ 				len = 15;
+ 				break;
++			case SV_CRAFTLIST:
++				len = load_u16(buf + 1);
++				craftwin_receive(buf, (int)len);
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_process(buf);
+@@ -1553,6 +1557,9 @@ uint32_t prefetch(unsigned char *buf, int size)
+ 			case SV_SKILLXP:
+ 				len = 15;
+ 				break;
++			case SV_CRAFTLIST:
++				len = load_u16(buf + 1);
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_prefetch(buf);
+diff --git a/src/gui/craftwin.c b/src/gui/craftwin.c
+new file mode 100644
+index 0000000..0860b92
+--- /dev/null
++++ b/src/gui/craftwin.c
+@@ -0,0 +1,493 @@
++/*
++ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Furnace and anvil window (protocol 6): the server sends the recipes of the station the
++ * player clicked (SV_CRAFTLIST, server skilling.c send_craft_list). The window lists them
++ * with the item, the level, what it needs and how many the player can make; the Make
++ * buttons send "/smelt <key> <count>" or "/smith <key> <count>". After each make the
++ * server sends the list again with the new counts.
++ */
++
++#include <stdint.h>
++#include <string.h>
++#include <stdio.h>
++#include <SDL3/SDL.h>
++
++#include "astonia.h"
++#include "gui/gui.h"
++#include "gui/gui_private.h"
++#include "game/game.h"
++#include "client/client.h"
++#include "client/protocol.h"
++#include "sdl/sdl.h"
++#include "modder/modder.h"
++
++#define CW_W     380
++#define CW_H     330
++#define CW_TITLE 18
++#define CW_INFO  32 // "Your Smithing level" line
++#define CW_LIST  48 // first list row
++#define CW_ROW   36 // list row height (item icon)
++#define CW_ROWS  6
++#define CW_BOT   (CW_LIST + CW_ROWS * CW_ROW + 6) // details and Make buttons
++#define CW_BTN_W 44
++
++#define MAXCRAFT 64
++
++#define CRAFT_OPEN     1
++#define CRAFT_NOHAMMER 2
++
++struct craft_recipe {
++	int nr, level, canmake, xp;
++	unsigned int sprite;
++	char key[32];
++	char name[40];
++	char need[164];
++};
++
++enum {
++	C_NONE = 0,
++	C_CLOSE,
++	C_TITLE,
++	C_SCROLL_UP,
++	C_SCROLL_DOWN,
++	C_MAKE, // + button (1, 5, 10, all)
++	C_ROW = C_MAKE + 4, // + visible row
++};
++
++static const int make_cnt[4] = {1, 5, 10, 0}; // 0 = all
++static const char *make_label[4] = {"1", "5", "10", "All"};
++
++static struct craft_recipe recipe[MAXCRAFT];
++static int recipe_cnt = 0;
++static int cw_station = 0; // 1 furnace, 2 anvil
++static int cw_flags = 0, cw_level = 0;
++static int cw_open = 0;
++static int cw_dx = 0, cw_dy = 0, cw_drag = 0, cw_drag_x, cw_drag_y;
++static int cw_pressed = C_NONE;
++static int cw_scroll = 0, cw_sel = -1; // cw_sel: recipe number from the server, -1 = none
++
++static int cw_x(void)
++{
++	int x = (XRES - CW_W) / 2 + cw_dx;
++	return x < 0 ? 0 : (x > XRES - CW_W - 1 ? XRES - CW_W - 1 : x);
++}
++
++static int cw_y(void)
++{
++	int y = (YRES - CW_H) / 2 - 20 + cw_dy;
++	return y < 0 ? 0 : (y > YRES - CW_H - 1 ? YRES - CW_H - 1 : y);
++}
++
++static int cw_selected(void)
++{
++	int i;
++
++	for (i = 0; i < recipe_cnt; i++) {
++		if (recipe[i].nr == cw_sel) {
++			return i;
++		}
++	}
++	return -1;
++}
++
++static int cw_can_make(const struct craft_recipe *r)
++{
++	if (cw_level < r->level || r->canmake < 1) {
++		return 0;
++	}
++	if (cw_station == 2 && (cw_flags & CRAFT_NOHAMMER)) {
++		return 0;
++	}
++	return 1;
++}
++
++static void cw_clamp_scroll(void)
++{
++	if (cw_scroll > recipe_cnt - CW_ROWS) {
++		cw_scroll = recipe_cnt - CW_ROWS;
++	}
++	if (cw_scroll < 0) {
++		cw_scroll = 0;
++	}
++}
++
++static int cw_string(const unsigned char *buf, int p, int end, char *dst, int size)
++{
++	int len;
++
++	if (p >= end) {
++		dst[0] = 0;
++		return end;
++	}
++	len = buf[p++];
++	if (p + len > end) {
++		len = end - p;
++	}
++	int n = len < size - 1 ? len : size - 1;
++	memcpy(dst, buf + p, (size_t)n);
++	dst[n] = 0;
++	return p + len;
++}
++
++// SV_CRAFTLIST: u16 total length, station, flags, level, count, then the recipes
++void craftwin_receive(const unsigned char *buf, int len)
++{
++	int p, n, cnt, station, flags;
++
++	station = buf[3];
++	flags = buf[4];
++	if (!(flags & CRAFT_OPEN) && (!cw_open || station != cw_station)) {
++		return; // a refresh for a window that is not showing
++	}
++	if (station != cw_station) {
++		cw_sel = -1;
++		cw_scroll = 0;
++	}
++	cw_station = station;
++	cw_flags = flags;
++	cw_level = buf[5];
++	cnt = buf[6];
++
++	for (p = 7, n = 0; n < cnt && n < MAXCRAFT && p + 9 <= len; n++) {
++		struct craft_recipe *r = recipe + n;
++		r->nr = buf[p];
++		r->level = buf[p + 1];
++		r->canmake = buf[p + 2];
++		r->xp = load_u16(buf + p + 3);
++		r->sprite = load_u32(buf + p + 5);
++		p += 9;
++		p = cw_string(buf, p, len, r->key, sizeof(r->key));
++		p = cw_string(buf, p, len, r->name, sizeof(r->name));
++		p = cw_string(buf, p, len, r->need, sizeof(r->need));
++	}
++	recipe_cnt = n;
++	cw_clamp_scroll();
++	if (cw_selected() == -1) {
++		cw_sel = -1;
++		for (n = 0; n < recipe_cnt; n++) { // preselect the first recipe the player can make
++			if (cw_can_make(recipe + n)) {
++				cw_sel = recipe[n].nr;
++				break;
++			}
++		}
++	}
++	if (flags & CRAFT_OPEN) {
++		cw_open = 1;
++	}
++}
++
++int craftwin_is_open(void)
++{
++	return cw_open;
++}
++
++void craftwin_close(void)
++{
++	cw_open = 0;
++	cw_drag = 0;
++	cw_pressed = C_NONE;
++}
++
++int craftwin_over(int x, int y)
++{
++	int px = cw_x(), py = cw_y();
++
++	return cw_open && x >= px && x <= px + CW_W && y >= py && y <= py + CW_H;
++}
++
++static int cw_in(int x, int y, int sx, int sy, int ex, int ey)
++{
++	return x >= sx && x <= ex && y >= sy && y <= ey;
++}
++
++static void cw_button_pos(int b, int *sx, int *sy)
++{
++	*sx = cw_x() + CW_W - 12 - (4 - b) * (CW_BTN_W + 4);
++	*sy = cw_y() + CW_H - 24;
++}
++
++static int cw_hit(int x, int y)
++{
++	int px = cw_x(), py = cw_y(), b, bx, by, r;
++
++	if (!craftwin_over(x, y)) {
++		return C_NONE;
++	}
++	if (cw_in(x, y, px + CW_W - 18, py + 2, px + CW_W - 4, py + 15)) {
++		return C_CLOSE;
++	}
++	if (y < py + CW_TITLE) {
++		return C_TITLE;
++	}
++	if (recipe_cnt > CW_ROWS && x >= px + CW_W - 14 && x <= px + CW_W - 4) {
++		if (cw_in(x, y, px + CW_W - 14, py + CW_LIST, px + CW_W - 4, py + CW_LIST + CW_ROWS * CW_ROW / 2)) {
++			return C_SCROLL_UP;
++		}
++		if (cw_in(x, y, px + CW_W - 14, py + CW_LIST + CW_ROWS * CW_ROW / 2, px + CW_W - 4,
++		        py + CW_LIST + CW_ROWS * CW_ROW)) {
++			return C_SCROLL_DOWN;
++		}
++	}
++	if (y >= py + CW_LIST && y < py + CW_LIST + CW_ROWS * CW_ROW && x >= px + 6 && x < px + CW_W - 16) {
++		r = (y - py - CW_LIST) / CW_ROW;
++		if (cw_scroll + r < recipe_cnt) {
++			return C_ROW + r;
++		}
++	}
++	for (b = 0; b < 4; b++) {
++		cw_button_pos(b, &bx, &by);
++		if (cw_in(x, y, bx, by, bx + CW_BTN_W, by + 15)) {
++			return C_MAKE + b;
++		}
++	}
++	return C_NONE;
++}
++
++int craftwin_over_control(int x, int y)
++{
++	int h = cw_hit(x, y);
++	return h != C_NONE && h != C_TITLE;
++}
++
++static void cw_make(int b)
++{
++	int i = cw_selected();
++	char buf[128];
++
++	if (i == -1 || !cw_can_make(recipe + i)) {
++		return;
++	}
++	if (make_cnt[b]) {
++		snprintf(buf, sizeof(buf), "/%s %s %d", cw_station == 1 ? "smelt" : "smith", recipe[i].key, make_cnt[b]);
++	} else {
++		snprintf(buf, sizeof(buf), "/%s %s all", cw_station == 1 ? "smelt" : "smith", recipe[i].key);
++	}
++	cmd_text(buf);
++}
++
++static void cw_click(int h)
++{
++	if (h == C_CLOSE) {
++		craftwin_close();
++	} else if (h == C_SCROLL_UP) {
++		cw_scroll -= CW_ROWS - 1;
++		cw_clamp_scroll();
++	} else if (h == C_SCROLL_DOWN) {
++		cw_scroll += CW_ROWS - 1;
++		cw_clamp_scroll();
++	} else if (h >= C_MAKE && h < C_MAKE + 4) {
++		cw_make(h - C_MAKE);
++	} else if (h >= C_ROW) {
++		int i = cw_scroll + h - C_ROW;
++		if (i < recipe_cnt) {
++			cw_sel = recipe[i].nr;
++		}
++	}
++}
++
++// Mouse input. Returns 1 if the event belongs to the window. Clicks outside it go to the game.
++int craftwin_mouse(int what, int x, int y, int delta)
++{
++	int h;
++
++	if (!cw_open) {
++		return 0;
++	}
++
++	if (what == SDL_MOUM_NONE) {
++		if (cw_drag) {
++			cw_dx += x - cw_drag_x;
++			cw_dy += y - cw_drag_y;
++			cw_drag_x = x;
++			cw_drag_y = y;
++		}
++		return 0;
++	}
++
++	if (what == SDL_MOUM_LUP && (cw_drag || cw_pressed != C_NONE)) {
++		if (cw_drag) {
++			cw_drag = 0;
++			cw_dx = cw_x() - (XRES - CW_W) / 2; // not past an edge
++			cw_dy = cw_y() - ((YRES - CW_H) / 2 - 20);
++		}
++		h = cw_hit(x, y);
++		if (h != C_NONE && h == cw_pressed) {
++			cw_click(h);
++		}
++		cw_pressed = C_NONE;
++		return 1;
++	}
++
++	if (!craftwin_over(x, y)) {
++		return 0;
++	}
++
++	switch (what) {
++	case SDL_MOUM_LDOWN:
++		h = cw_hit(x, y);
++		if (h == C_TITLE) {
++			cw_dx = cw_x() - (XRES - CW_W) / 2;
++			cw_dy = cw_y() - ((YRES - CW_H) / 2 - 20);
++			cw_drag = 1;
++			cw_drag_x = x;
++			cw_drag_y = y;
++		}
++		cw_pressed = h;
++		return 1;
++	case SDL_MOUM_WHEEL:
++		cw_scroll -= delta;
++		cw_clamp_scroll();
++		return 1;
++	default:
++		return 1;
++	}
++}
++
++static void cw_icon(unsigned int sprite, int x, int y)
++{
++	unsigned short c1, c2, c3, shine;
++	unsigned char scale, cr, cg, cb, light, sat;
++	RenderFX fx;
++
++	render_sprite(opt_sprite(SPR_ITPAD), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
++	if (!sprite) {
++		return;
++	}
++	bzero(&fx, sizeof(fx));
++	fx.sprite = trans_asprite(0, sprite, tick, &scale, &cr, &cg, &cb, &light, &sat, &c1, &c2, &c3, &shine);
++	fx.shine = shine;
++	fx.c1 = c1;
++	fx.c2 = c2;
++	fx.c3 = c3;
++	fx.cr = (char)cr;
++	fx.cg = (char)cg;
++	fx.cb = (char)cb;
++	fx.clight = (char)light;
++	fx.sat = (char)sat;
++	fx.scale = scale;
++	fx.align = RENDER_ALIGN_CENTER;
++	fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = FX_ITEMLIGHT;
++	render_sprite_fx(&fx, x, y);
++}
++
++static void cw_display_list(int px, int py, int hov)
++{
++	int r, y;
++	unsigned short line = IRGB(10, 8, 4);
++
++	render_line(px + 8, py + CW_LIST - 3, px + CW_W - 8, py + CW_LIST - 3, line);
++
++	for (r = 0; r < CW_ROWS && cw_scroll + r < recipe_cnt; r++) {
++		const struct craft_recipe *rc = recipe + cw_scroll + r;
++		int ok = cw_can_make(rc);
++
++		y = py + CW_LIST + r * CW_ROW;
++		if (rc->nr == cw_sel) {
++			render_rect_alpha(px + 6, y, px + CW_W - 16, y + CW_ROW - 1, IRGB(18, 13, 6), 110);
++		} else if (hov == C_ROW + r) {
++			render_rect_alpha(px + 6, y, px + CW_W - 16, y + CW_ROW - 1, IRGB(12, 9, 4), 90);
++		}
++
++		cw_icon(rc->sprite, px + 26, y + CW_ROW / 2);
++
++		render_text(px + 50, y + 3, ok ? whitecolor : (cw_level < rc->level ? IRGB(31, 12, 10) : lightgraycolor), 0,
++		    rc->name);
++		render_text_fmt(px + 50, y + 14, cw_level < rc->level ? IRGB(31, 12, 10) : lightgraycolor, 0,
++		    "Level %d, %d XP each", rc->level, rc->xp);
++		render_text_fmt(px + 50, y + 25, graycolor, 0, "Needs %s", rc->need);
++		render_text_fmt(px + CW_W - 22, y + 3, rc->canmake ? IRGB(12, 28, 12) : graycolor, RENDER_TEXT_RIGHT, "%d",
++		    rc->canmake);
++	}
++
++	if (recipe_cnt == 0) {
++		render_text(px + CW_W / 2, py + CW_LIST + 30, lightgraycolor, RENDER_ALIGN_CENTER, "Nothing can be made here.");
++	}
++
++	// scrollbar
++	if (recipe_cnt > CW_ROWS) {
++		int top = py + CW_LIST, h = CW_ROWS * CW_ROW;
++		int th = h * CW_ROWS / recipe_cnt, ty = top + (h - th) * cw_scroll / (recipe_cnt - CW_ROWS);
++		render_rect_alpha(px + CW_W - 12, top, px + CW_W - 6, top + h, IRGB(6, 5, 3), 200);
++		gui_draw_box(px + CW_W - 12, ty, px + CW_W - 7, ty + th, IRGB(18, 14, 8), IRGB(8, 6, 3));
++	}
++
++	render_line(px + 8, py + CW_BOT - 3, px + CW_W - 8, py + CW_BOT - 3, line);
++}
++
++static void cw_display_bottom(int px, int py, int hov)
++{
++	int i = cw_selected(), b, bx, by, ok;
++	const char *why = NULL;
++	unsigned short edge = IRGB(20, 16, 8);
++
++	if (i == -1) {
++		render_text(px + 12, py + CW_BOT + 4, lightgraycolor, 0, "Click an item in the list.");
++		ok = 0;
++	} else {
++		const struct craft_recipe *rc = recipe + i;
++		ok = cw_can_make(rc);
++		render_text(px + 12, py + CW_BOT + 2, whitecolor, 0, rc->name);
++		if (cw_level < rc->level) {
++			why = "Your Smithing level is too low.";
++		} else if (cw_station == 2 && (cw_flags & CRAFT_NOHAMMER)) {
++			why = "You need a hammer.";
++		} else if (rc->canmake < 1) {
++			why = "You do not have the materials.";
++		}
++		if (why) {
++			render_text(px + 12, py + CW_BOT + 14, IRGB(31, 12, 10), 0, why);
++		} else {
++			render_text_fmt(px + 12, py + CW_BOT + 14, lightgraycolor, 0, "You have materials for %d.", rc->canmake);
++		}
++	}
++
++	cw_button_pos(0, &bx, &by);
++	render_text(bx - 6, by + 3, ok ? textcolor : graycolor, RENDER_TEXT_RIGHT, "Make:");
++	for (b = 0; b < 4; b++) {
++		unsigned short fill;
++		cw_button_pos(b, &bx, &by);
++		if (!ok) {
++			fill = IRGB(5, 4, 3);
++		} else if (hov == C_MAKE + b) {
++			fill = cw_pressed == C_MAKE + b ? IRGB(22, 16, 7) : IRGB(18, 13, 6);
++		} else {
++			fill = IRGB(11, 8, 4);
++		}
++		gui_draw_box(bx, by, bx + CW_BTN_W, by + 15, fill, edge);
++		render_text(bx + CW_BTN_W / 2, by + 3, ok ? whitecolor : graycolor, RENDER_ALIGN_CENTER, make_label[b]);
++	}
++}
++
++void craftwin_display(void)
++{
++	int px, py, hov;
++
++	if (!cw_open) {
++		return;
++	}
++
++	px = cw_x();
++	py = cw_y();
++	hov = cw_hit(mousex, mousey);
++
++	render_push_clip();
++	render_set_clip(0, 0, XRES, YRES);
++
++	gui_draw_panel(px, py, CW_W + 1, CW_H + 1, CW_TITLE);
++	render_text(px + CW_W / 2, py + 5, whitecolor, RENDER_ALIGN_CENTER, cw_station == 1 ? "Furnace" : "Anvil");
++	render_text(px + CW_W - 11, py + 5, hov == C_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
++
++	render_set_clip(px + 1, py + 1, px + CW_W, py + CW_H);
++
++	render_text_fmt(px + 12, py + CW_INFO - 8, lightgraycolor, 0, "Your Smithing level: %d", cw_level);
++	if (cw_station == 2 && (cw_flags & CRAFT_NOHAMMER)) {
++		render_text(px + CW_W - 12, py + CW_INFO - 8, IRGB(31, 12, 10), RENDER_TEXT_RIGHT, "You need a hammer.");
++	}
++	render_text(px + CW_W - 22, py + CW_INFO + 4, IRGB(31, 24, 10), RENDER_TEXT_RIGHT, "Can make");
++
++	cw_display_list(px, py, hov);
++	cw_display_bottom(px, py, hov);
++
++	render_pop_clip();
++}
+diff --git a/src/gui/gui.h b/src/gui/gui.h
+index 7eaf271..e0fc9fe 100644
+--- a/src/gui/gui.h
++++ b/src/gui/gui.h
+@@ -92,6 +92,15 @@ void questwin_display(void);
+ void questwin_get_pos(int *x, int *y, int *w, int *h);
+ void questwin_set_pos(int x, int y, int w, int h);
+ 
++// furnace / anvil window (craftwin.c)
++void craftwin_receive(const unsigned char *buf, int len);
++int craftwin_is_open(void);
++void craftwin_close(void);
++int craftwin_over(int x, int y);
++int craftwin_over_control(int x, int y);
++int craftwin_mouse(int what, int x, int y, int delta);
++void craftwin_display(void);
++
+ extern int (*get_skltab_sep)(int i);
+ DLL_EXPORT int _get_skltab_sep(int i);
+ extern int (*get_skltab_index)(int n);
+diff --git a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+index a77267b..3f93d3a 100644
+--- a/src/gui/gui_buttons.c
++++ b/src/gui/gui_buttons.c
+@@ -1342,14 +1342,16 @@ void set_cmd_states(void)
+ 		return;
+ 	}
+ 
+-	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || minimap_over(mousex, mousey)) {
++	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || craftwin_over(mousex, mousey) ||
++	    minimap_over(mousex, mousey)) {
+ 		// the settings and questlog windows, the minimap and the big map take the mouse while it is over them
+ 		butsel = invsel = weasel = consel = sklsel = sklsel2 = telsel = helpsel = colsel = skl_look_sel = questsel =
+ 		    actsel = -1;
+ 		mapsel = itmsel = chrsel = MAXMN;
+ 		lcmd = rcmd = CMD_NONE;
+ 		set_cmd_cursor(
+-		    options_over_control(mousex, mousey) || (!options_over(mousex, mousey) && questwin_over_control(mousex, mousey))
++		    options_over_control(mousex, mousey) || (!options_over(mousex, mousey) && questwin_over_control(mousex, mousey)) ||
++		            (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) && craftwin_over_control(mousex, mousey))
+ 		        ? CMD_OPTIONS
+ 				: CMD_NONE);
+ 		return;
+diff --git a/src/gui/gui_core.c b/src/gui/gui_core.c
+index c91d1d3..15a9b25 100644
+--- a/src/gui/gui_core.c
++++ b/src/gui/gui_core.c
+@@ -426,6 +426,7 @@ int main_loop(void)
+ 				amod_frame();
+ 				display_mouseover();
+ 				questwin_display();
++				craftwin_display();
+ 				options_display();
+ 				minimap_update();
+ 				sdl_end_passes();
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index 89ebfaa..61add3f 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -35,6 +35,10 @@ void gui_sdl_keyproc(SDL_Keycode wparam)
+ 			options_close();
+ 			return;
+ 		}
++		if (craftwin_is_open()) {
++			craftwin_close();
++			return;
++		}
+ 		questwin_close();
+ 		cmd_stop();
+ 		context_stop();
+@@ -311,6 +315,15 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		}
+ 		return;
+ 	}
++	// the furnace / anvil window, for clicks inside it
++	if (what != SDL_MOUM_NONE && craftwin_mouse(what, mousex, mousey, local_y)) {
++		if (what == SDL_MOUM_LUP) {
++			vk_lbut = 0;
++		} else if (what == SDL_MOUM_RUP) {
++			vk_rbut = 0;
++		}
++		return;
++	}
+ 	// so does the questlog window, for clicks inside it
+ 	if (what != SDL_MOUM_NONE && questwin_mouse(what, mousex, mousey, local_y)) {
+ 		if (what == SDL_MOUM_LUP) {
+@@ -367,6 +380,7 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 
+ 		options_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 		questwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
++		craftwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 
+ 		if (butsel != -1 && vk_lbut && (but[butsel].flags & BUTF_MOVEEXEC)) {
+ 			exec_cmd(lcmd, 0);
+diff --git a/src/gui/hover.c b/src/gui/hover.c
+index 8809f07..6b47503 100644
+--- a/src/gui/hover.c
++++ b/src/gui/hover.c
+@@ -45,7 +45,7 @@ void display_mouseover(void)
+ 	if (mousex < 0 || mousex >= XRES || mousey < 0 || mousey >= YRES || !sdl_has_focus()) {
+ 		return;
+ 	}
+-	if (options_over(mousex, mousey) || questwin_over(mousex, mousey)) {
++	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || craftwin_over(mousex, mousey)) {
+ 		return;
+ 	}
+ 	if (minimap_over(mousex, mousey)) {

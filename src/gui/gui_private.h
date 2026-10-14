@@ -1,0 +1,637 @@
+/*
+ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
+ */
+#include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_stdinc.h>
+
+#include "../dll.h"
+#include "../astonia.h"
+
+#define INVDX      4
+#define INVDY      (__invdy)
+#define CONDX      4
+#define CONDY      (__condy)
+#define SKLDY      (__skldy)
+#define SKLWIDTH   145
+#define LINEHEIGHT 10
+
+#define FX_ITEMLIGHT  RENDERFX_NORMAL_LIGHT
+#define FX_ITEMBRIGHT RENDERFX_BRIGHT
+#define DOTF_TOPOFF   (1 << 0) // dot moves with top bar
+
+// Inventory, container and skill list have buttons for their largest panel size; rows the
+// panel is too small for are moved off screen by init_dots().
+#define MAXINVROWS 10 // inventory and container rows
+#define MAXSKLROWS 40 // skill list lines
+
+#define BUT_MAP       0
+#define BUT_WEA_BEG   1
+#define BUT_WEA_END   12
+#define BUT_INV_BEG   13
+#define BUT_INV_END   (BUT_INV_BEG + 4 * MAXINVROWS - 1)
+#define BUT_CON_BEG   (BUT_INV_END + 1)
+#define BUT_CON_END   (BUT_CON_BEG + 4 * MAXINVROWS - 1)
+#define BUT_SCL_UP    (BUT_CON_END + 1)
+#define BUT_SCL_TR    (BUT_CON_END + 2)
+#define BUT_SCL_DW    (BUT_CON_END + 3)
+#define BUT_SCR_UP    (BUT_CON_END + 4)
+#define BUT_SCR_TR    (BUT_CON_END + 5)
+#define BUT_SCR_DW    (BUT_CON_END + 6)
+#define BUT_SKL_BEG   (BUT_CON_END + 7)
+#define BUT_SKL_END   (BUT_SKL_BEG + MAXSKLROWS - 1)
+#define BUT_GLD       (BUT_SKL_END + 1)
+#define BUT_JNK       (BUT_SKL_END + 2)
+#define BUT_MOD_WALK0 (BUT_SKL_END + 3)
+#define BUT_MOD_WALK1 (BUT_SKL_END + 4)
+#define BUT_MOD_WALK2 (BUT_SKL_END + 5)
+
+#define BUT_TEL        (BUT_SKL_END + 6)
+#define BUT_HELP_NEXT  (BUT_TEL + 1)
+#define BUT_HELP_PREV  (BUT_TEL + 2)
+#define BUT_HELP_MISC  (BUT_TEL + 3)
+#define BUT_HELP_CLOSE (BUT_TEL + 4)
+#define BUT_EXIT       (BUT_TEL + 5)
+#define BUT_HELP       (BUT_TEL + 6)
+#define BUT_NOLOOK     (BUT_TEL + 7)
+#define BUT_COLOR      (BUT_TEL + 8)
+#define BUT_SKL_LOOK   (BUT_TEL + 9)
+#define BUT_QUEST      (BUT_TEL + 10)
+#define BUT_HELP_DRAG  (BUT_TEL + 11)
+
+#define BUT_TEL_MISC (BUT_TEL + 12)
+
+#define BUT_ACT_LCK (BUT_TEL + 13)
+#define BUT_ACT_OPN (BUT_TEL + 14)
+#define BUT_ACT_BEG (BUT_TEL + 15)
+#define BUT_ACT_END (BUT_ACT_BEG + 13)
+
+#define BUT_WEA_LCK    (BUT_ACT_END + 1)
+#define BUT_HELP_INDEX (BUT_ACT_END + 2)
+
+#define BUT_OPTIONS   (BUT_ACT_END + 3)
+#define OPTIONS_BUT_X 656 // "Settings" plate in the top bar, left of Exit
+#define OPTIONS_BUT_Y 7
+#define OPTIONS_BUT_W 44
+#define OPTIONS_BUT_H 11
+
+#define MAX_BUT (BUT_OPTIONS + 1)
+
+#define BUTF_NOHIT    (1 << 1) // button is ignored int hit processing
+#define BUTF_CAPTURE  (1 << 2) // button captures mouse on lclick
+#define BUTF_MOVEEXEC (1 << 3) // button calls cmd_exec(lcmd) on mousemove
+#define BUTF_RECT     (1 << 4) // editor - button is a rectangle
+#define BUTF_TOPOFF   (1 << 5) // button moves with top bar
+
+#define CMD_RETURN 256
+#define CMD_DELETE 257
+#define CMD_BACK   258
+#define CMD_LEFT   259
+#define CMD_RIGHT  260
+#define CMD_HOME   261
+#define CMD_END    262
+#define CMD_UP     263
+#define CMD_DOWN   264
+
+
+#define CMD_NONE     0
+#define CMD_MAP_MOVE 1
+#define CMD_MAP_DROP 2
+
+#define CMD_ITM_TAKE     3
+#define CMD_ITM_USE      4
+#define CMD_ITM_USE_WITH 5
+
+#define CMD_CHR_ATTACK 6
+#define CMD_CHR_GIVE   7
+
+#define CMD_INV_USE      8
+#define CMD_INV_USE_WITH 9
+#define CMD_INV_TAKE     10
+#define CMD_INV_SWAP     11
+#define CMD_INV_DROP     12
+
+#define CMD_WEA_USE      13
+#define CMD_WEA_USE_WITH 14
+#define CMD_WEA_TAKE     15
+#define CMD_WEA_SWAP     16
+#define CMD_WEA_DROP     17
+
+#define CMD_CON_TAKE 18
+#define CMD_CON_BUY  19
+#define CMD_CON_SWAP 20
+#define CMD_CON_DROP 21
+#define CMD_CON_SELL 22
+
+#define CMD_MAP_LOOK 23
+#define CMD_ITM_LOOK 24
+#define CMD_CHR_LOOK 25
+#define CMD_INV_LOOK 26
+#define CMD_WEA_LOOK 27
+#define CMD_CON_LOOK 28
+
+#define CMD_MAP_CAST_L 29
+#define CMD_ITM_CAST_L 30
+#define CMD_CHR_CAST_L 31
+#define CMD_MAP_CAST_R 32
+#define CMD_ITM_CAST_R 33
+#define CMD_CHR_CAST_R 34
+#define CMD_MAP_CAST_K 35
+#define CMD_CHR_CAST_K 36
+#define CMD_SLF_CAST_K 37
+
+// #define CMD_SPL_SET_L           38
+// #define CMD_SPL_SET_R           39
+
+#define CMD_SKL_RAISE 40
+
+#define CMD_INV_OFF_UP 41
+#define CMD_INV_OFF_DW 42
+#define CMD_INV_OFF_TR 43
+
+#define CMD_SKL_OFF_UP 44
+#define CMD_SKL_OFF_DW 45
+#define CMD_SKL_OFF_TR 46
+
+#define CMD_CON_OFF_UP 47
+#define CMD_CON_OFF_DW 48
+#define CMD_CON_OFF_TR 49
+
+#define CMD_USE_FKEYITEM 50
+
+#define CMD_SAY_HITSEL 51
+
+#define CMD_DROP_GOLD 52
+#define CMD_TAKE_GOLD 53
+
+#define CMD_JUNK_ITEM 54
+
+#define CMD_SPEED0 55
+#define CMD_SPEED1 56
+#define CMD_SPEED2 57
+
+#define CMD_CON_FASTTAKE 61
+#define CMD_CON_FASTBUY  62
+#define CMD_CON_FASTSELL 63
+#define CMD_TELEPORT     64
+#define CMD_CON_FASTDROP 65
+
+#define CMD_HELP_NEXT  66
+#define CMD_HELP_PREV  67
+#define CMD_HELP_MISC  68
+#define CMD_HELP_CLOSE 69
+#define CMD_EXIT       70
+#define CMD_HELP       71
+#define CMD_NOLOOK     72
+
+#define CMD_COLOR     73
+#define CMD_SKL_LOOK  74
+#define CMD_QUEST     75
+#define CMD_HELP_DRAG 76
+
+#define CMD_ACTION        77
+#define CMD_ACTION_CANCEL 78
+
+#define CMD_ACTION_LOCK 79
+#define CMD_ACTION_OPEN 80
+
+#define CMD_WEAR_LOCK  81
+#define CMD_HELP_INDEX 82
+#define CMD_OPTIONS    83
+#define CMD_SKL_TAB    84 // click on the Skills / Effects tab line
+
+#define STV_EMPTYLINE  -1
+#define STV_JUSTAVALUE -2 // value is in curr
+#define STV_HEADER     -3 // group title, text is in name
+#define STV_SKILL      -4 // use-based skill, shows its level only, see skill_id
+#define STV_TABS       -5 // Skills / Effects tab line (protocol 10)
+#define STV_EFFECT     -6 // effects tab line, curr is the index into effline[]
+
+#define SKLVIEW_SKILLS  0
+#define SKLVIEW_EFFECTS 1
+
+#define TGT_MAP 1
+#define TGT_ITM 2
+#define TGT_CHR 3
+#define TGT_SLF 4
+
+#define HOVER_DELAY (TICKS / 4)
+
+struct dot {
+	int flags;
+
+	int x;
+	int y;
+};
+typedef struct dot DOT;
+
+struct but {
+	int flags; // flags
+
+	// int id;         // something an application can give a button, but it need not ;-)
+	// int val;        // something an application can give a button, but it need not ;-)
+
+	int x; // center x coordinate - or left if button is a RECT
+	int y; // center y coordinate - or top if button is a RECT
+	int dx; // width of a rect button
+	int dy; // height of a rect button
+
+	int sqhitrad; // hit (square) radius of this button
+};
+
+typedef struct but BUT;
+
+struct skltab {
+	int v; // negative v-values indicate a special display (empty lines, negative exp, etc...)
+	int button; // show button
+	char name[80];
+	int base;
+	int curr;
+	int raisecost;
+	int barsize; // positive is blue, negative is red
+	int skill_id; // use-based skills: index into cskill[], -1 = none (old point-buy display)
+};
+
+typedef struct skltab SKLTAB;
+
+struct keytab {
+	SDL_Keycode keycode;
+	SDL_Keycode userdef;
+	int vk_item, vk_char, vk_spell;
+	char name[40];
+	int tgt;
+	int cl_spell;
+	int skill;
+	Uint64 usetime;
+};
+
+typedef struct keytab KEYTAB;
+
+struct spell {
+	int cl; // id of spell sent to server (0=look/spellmode change)
+	char name[40]; // name in text display
+};
+
+typedef struct spell SPELL;
+
+#ifndef HAVE_SPECIAL_TAB
+#define HAVE_SPECIAL_TAB
+
+struct special_tab {
+	char *name;
+	int shift_over;
+	int control_over;
+	int spell, target;
+	int req;
+};
+
+typedef struct special_tab SPECIAL_TAB;
+#endif
+
+extern int gui_topoff;
+extern DOT *dot;
+extern BUT *but;
+
+extern int invsel; // index into item
+extern int weasel; // index into weatab
+extern int consel; // index into item
+extern int sklsel;
+extern int sklsel2;
+extern int butsel; // is always set, if any of the others is set
+extern int telsel;
+extern int helpsel;
+extern int questsel;
+extern int colsel;
+extern int actsel;
+extern int skl_look_sel;
+
+#define ACTION_NONE     -1
+#define ACTION_ATTACK   0
+#define ACTION_FIREBALL 1
+#define ACTION_LBALL    2
+#define ACTION_FLASH    3
+#define ACTION_FREEZE   4
+#define ACTION_SHIELD   5
+#define ACTION_BLESS    6
+#define ACTION_HEAL     7
+#define ACTION_WARCRY   8
+#define ACTION_PULSE    9
+#define ACTION_FIRERING 10
+#define ACTION_TAKEGIVE 11
+#define ACTION_MAP      12
+#define ACTION_LOOK     13
+
+extern int action_ovr; // action bar overrides other functions
+
+DLL_EXPORT extern int weatab[12];
+extern char weaname[12][32];
+
+extern int cur_cursor;
+extern int mousex, mousey;
+DLL_EXPORT extern int vk_shift, vk_control, vk_alt;
+extern int vk_rbut, vk_lbut, shift_override;
+extern int mousedx, mousedy;
+extern int vk_item, vk_char, vk_spell;
+
+extern int capbut; // the button capturing the mouse
+
+extern int invoff, max_invoff;
+extern int conoff, max_conoff;
+extern int skloff, max_skloff;
+extern int __skldy;
+extern int __invdy;
+extern int __condy;
+
+extern int fkeyitem[4];
+
+extern int lcmd;
+extern int rcmd;
+
+extern uint32_t takegold; // the amout of gold to take
+
+DLL_EXPORT extern SKLTAB *skltab;
+extern int skltab_max;
+DLL_EXPORT extern int skltab_cnt;
+
+extern KEYTAB *keytab;
+extern int max_keytab;
+
+extern int clan_offset;
+
+extern int show_color, show_cur;
+extern unsigned short show_color_c[];
+extern int show_cx;
+extern char hitsel[];
+extern int hittype;
+extern int act_lck;
+
+// ============================================================================
+// Shared variables from gui_core.c
+// ============================================================================
+extern uint64_t gui_time_misc;
+extern int skip, idle, tota, frames;
+extern int display_vc;
+extern int display_help, display_quest;
+extern int playersprite_override;
+extern int update_skltab;
+extern int skl_view; // SKLVIEW_SKILLS or SKLVIEW_EFFECTS
+int skl_row(int r); // skltab index shown in skills panel row r (the tab line stays on row 0)
+extern int show_look;
+extern int control_override;
+extern int vk_rbut, vk_lbut;
+extern int vk_special;
+extern Uint64 vk_special_time;
+extern struct special_tab *special_tab;
+extern int max_special;
+extern int plrmn;
+extern map_index_t mapsel;
+extern map_index_t itmsel;
+extern map_index_t chrsel;
+extern int last_right_click_invsel;
+extern int mapoffx, mapoffy;
+extern int mapaddx, mapaddy;
+extern int nextframe, nexttick;
+extern uint64_t gui_time_network;
+extern uint64_t gui_frametime;
+extern uint64_t gui_ticktime;
+extern uint64_t gui_last_tick_time;
+DLL_EXPORT extern int game_slowdown;
+
+// Platform-specific GUI functions
+void gui_sdl_draghack(void);
+
+// ============================================================================
+// Shared variables from gui_map.c (shared for map coordinate functions)
+// ============================================================================
+// (mapoffx, mapoffy, mapaddx, mapaddy are already declared above)
+
+// ============================================================================
+// Shared variables from gui_buttons.c
+// ============================================================================
+// (button handling variables)
+
+// ============================================================================
+// Shared variables from gui_display.c
+// ============================================================================
+// (display functions)
+
+// ============================================================================
+// Internal function prototypes for cross-module use
+// ============================================================================
+
+// From gui_core.c
+void gui_insert(void);
+int gui_keymode(void);
+int vk_special_inc(void);
+int vk_special_dec(void);
+
+// From gui_inventory.c
+void set_invoff(int bymouse, int ny);
+void set_invsel(int newinvsel);
+void set_skloff(int bymouse, int ny);
+void set_skltab(void);
+void set_conoff(int bymouse, int ny);
+void set_cmd_invsel(void);
+void set_cmd_consel(void);
+void set_cmd_weasel(void);
+void set_weasel(int newweasel);
+void set_button_flags(void);
+// get_skltab_* functions are function pointers declared in gui.h, not here
+int is_fkey_use_item(int invnr);
+
+// From gui_buttons.c
+int get_near_button(int x, int y);
+void calculate_lcmd_logic(void);
+void calculate_rcmd_logic(void);
+void handle_special_buttons_logic(void);
+void apply_gear_lock_logic(void);
+void exec_cmd(int cmd, int param);
+void set_cmd_states(void);
+
+// From gui_display.c
+void display_helpandquest(void);
+void display_wheel(void);
+void display(void);
+void update_ui_layout(void);
+
+// Help data (loaded from JSON)
+#define HELP_TEXT_WIDTH              192
+#define HELP_INDEX_COL_WIDTH         100
+#define HELP_INDEX_ROW_HEIGHT        10
+#define HELP_PAGE_MARGIN_TOP         8
+#define HELP_PAGE_MARGIN_BOTTOM      20
+#define HELP_INDEX_TITLE_SPACING     10
+#define HELP_FAST_HELP_TITLE_SPACING 5
+#define HELP_TITLE_SPACING           5
+#define HELP_PARAGRAPH_SPACING       10
+
+extern int help_page_count;
+extern int help_index_count;
+
+int help_index_page_for_entry(int entry);
+
+// From gui_map.c (already declared in gui.h but repeated here for clarity)
+// void set_mapoff(int cx, int cy, int mdx, int mdy);
+// void set_mapadd(int dx, int dy);
+// int mtos(int m, int o, int a, int *xs, int *ys);
+// int stom(int s, int o, int a, int *xm, int *ym);
+
+void dx_copysprite_emerald(int scrx, int scry, int emx, int emy);
+void display_cmd(void);
+
+void display_wear(void);
+void display_look(void);
+void display_citem(void);
+void display_gold(void);
+void display_container(void);
+void display_inventory(void);
+void display_keys(void);
+void display_skill(void);
+void display_scrollbars(void);
+void display_tutor(void);
+void display_screen(void);
+void display_text(void);
+void display_mode(void);
+void display_mouseover(void);
+void display_selfspells(void);
+void display_exp(void);
+void display_military(void);
+void display_rage(void);
+void display_game_special(void);
+
+// hover.c
+int16_t tactics2melee(int val);
+int16_t tactics2immune(int val);
+int16_t tactics2spell(int val);
+
+int do_display_questlog(int nr);
+
+// window drawing shared by the Options and Questlog windows (options.c)
+void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border);
+void gui_draw_box_outline(int sx, int sy, int ex, int ey, unsigned short border);
+int chat_latest_hit(int mx, int my);
+int chat_slider_mouse(int what);
+int cmd_box_hit(int x, int y);
+void gui_draw_panel(int x, int y, int w, int h, int title_h);
+
+// From panels.c: the top bar and bottom window cut into movable panels
+#define PANEL_TITLE   12 // title strip height, used for dragging
+#define PNL_LEVEL     0
+#define PNL_EQUIPMENT 1
+#define PNL_MENU      2
+#define PNL_SKILLS    3
+#define PNL_STATUS    4
+#define PNL_CHAT      5
+#define PNL_INVENTORY 6
+#define MAX_PANEL     7
+extern int panels_locked;
+void panels_layout(void);
+void panels_pass(int p);
+void panels_display_frame(int p);
+void panels_set_scale(int p, int percent);
+extern int pnl_chat_text;
+int panels_chat_text(void);
+void panels_set_chat_text(int t);
+const char *pnl_title(int p);
+int pnl_scale(int p);
+int pnl_sw(int p);
+int pnl_sh(int p);
+int pnl_lx(int p, int x);
+int pnl_ly(int p, int y);
+int pnl_sx(int p, int x);
+int pnl_sy(int p, int y);
+int pnl_mx(int p);
+int pnl_my(int p);
+int dots_but_panel(int b);
+void display_menu(void);
+void display_junk(void);
+void display_scrollbars_skl(void);
+void display_scrollbars_inv(void);
+int panels_mouse(int what, int x, int y);
+int panels_dragging(void);
+void panels_reset(void);
+int panels_load_setting(const char *key, const char *val);
+void panels_save_settings(void *fp); // FILE *
+int panels_top_row_h(void);
+int panels_bottom_row_y(void);
+int pnl_at(int x, int y);
+int pnl_x(int p);
+int pnl_y(int p);
+int pnl_w(int p);
+int pnl_h(int p);
+int pnl_dx(int p);
+int pnl_dy(int p);
+int pnl_cw(int p);
+int pnl_ch(int p);
+
+void display_action(void);
+void display_selfbars(void);
+
+void display_teleport(void);
+int get_teleport(int x, int y);
+
+void display_color(void);
+int get_color(int x, int y);
+void cmd_color(int nr);
+void cmd_reset(void);
+void cmd_proc(int key);
+
+#define NEAR_ITEM    1024
+#define NEAR_CHAR    2048
+#define NEAR_NOTSELF 4096
+map_index_t get_near_ex(int x, int y, unsigned int flags, unsigned int looksize);
+
+DLL_EXPORT size_t get_near_char(int x, int y, unsigned int looksize);
+DLL_EXPORT size_t get_near_item(int x, int y, unsigned int flag, unsigned int looksize);
+DLL_EXPORT size_t get_near_ground(int x, int y);
+
+int context_open(int mx, int my);
+void context_display(int mx, int my);
+void context_stop(void);
+int context_click(int mx, int my);
+int context_key(int key);
+void context_keydown(SDL_Keycode key);
+void context_keyup(SDL_Keycode key);
+int context_key_set(int onoff);
+int context_key_isset(void);
+int context_key_isset(void);
+int context_key_enabled(void);
+int context_key_set_cmd(void);
+void context_key_reset(void);
+int context_key_click(void);
+
+DLL_EXPORT extern char hover_bless_text[];
+DLL_EXPORT extern char hover_freeze_text[];
+DLL_EXPORT extern char hover_heal_text[];
+DLL_EXPORT extern char hover_potion_text[];
+DLL_EXPORT extern char hover_rage_text[];
+DLL_EXPORT extern char hover_level_text[];
+DLL_EXPORT extern char hover_rank_text[];
+DLL_EXPORT extern char hover_time_text[];
+
+int action_key2slot(SDL_Keycode key);
+SDL_Keycode action_slot2key(int slot);
+int16_t has_action_skill(int i);
+void action_set_key(int slot, SDL_Keycode key);
+void context_action_enable(int onoff);
+
+void minimap_init(void);
+void minimap_layout(void);
+void minimap_toggle(void);
+void minimap_hide(void);
+void display_minimap(void);
+void minimap_update(void);
+void minimap_display_hover(int x, int y);
+int minimap_mouse(int what, int x, int y, int delta);
+int minimap_over(int x, int y);
+int minimap_load_setting(const char *key, const char *val);
+void minimap_save_settings(void *fp); // FILE *
+int minimap_shown(void);
+void minimap_set_shown(int onoff);
+void minimap_reset_layout(void);
+void dots_update(void);
+int dots_level_x(void);
+int dots_level_y(void);
+void display_action_lock(void);
+void display_action_open(void);
+void display_wear_lock(void);
+DLL_EXPORT void cmd_add_text(const char *buf, int typ);

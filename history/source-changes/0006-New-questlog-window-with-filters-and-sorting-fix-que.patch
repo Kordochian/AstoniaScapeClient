@@ -1,0 +1,1019 @@
+From d7abf76cda44b3734c6bb3a4529384c2ebabe465 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 08:04:51 +0000
+Subject: [PATCH] New questlog window with filters and sorting; fix questlog
+ crash
+
+The questlog opens in a window styled like the Options window (rounded,
+see-through, draggable) with filters for status, area and level, a sort order,
+a details line with Re-open, and a Random dungeon tab.
+
+The server uses MAXQUEST 250 and two extra quests (Forest Robbers, Warm
+Clothes); the client expected 100, so opening the questlog desynced the
+protocol and closed the client. MAXQUEST is now 250, the SV_QUESTLOG length
+follows it, and the quest table matches the server's levels and exp.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ src/amod/amod_structs.h |   2 +-
+ src/client/client.h     |   2 +-
+ src/client/protocol.c   |   4 +-
+ src/gui/gui.h           |  10 +
+ src/gui/gui_buttons.c   |  17 +-
+ src/gui/gui_core.c      |   1 +
+ src/gui/gui_input.c     |  19 +-
+ src/gui/gui_private.h   |   5 +
+ src/gui/hover.c         |   2 +-
+ src/gui/options.c       |  16 +-
+ src/gui/questlog.c      | 675 +++++++++++++++++++++++++++++++++++++++-
+ 11 files changed, 708 insertions(+), 45 deletions(-)
+
+diff --git a/src/amod/amod_structs.h b/src/amod/amod_structs.h
+index 9e5f4d6..dc9d95d 100644
+--- a/src/amod/amod_structs.h
++++ b/src/amod/amod_structs.h
+@@ -159,7 +159,7 @@
+ #define SDL_MOUM_WHEEL 7
+ 
+ #define MAXSHRINE 256
+-#define MAXQUEST  100
++#define MAXQUEST  250
+ 
+ #define CMF_LIGHT      (1 + 2 + 4 + 8)
+ #define CMF_VISIBLE    16
+diff --git a/src/client/client.h b/src/client/client.h
+index e3d606f..9d9d403 100644
+--- a/src/client/client.h
++++ b/src/client/client.h
+@@ -6,7 +6,7 @@
+ 
+ #define MAXCHARS 2048
+ 
+-#define MAXQUEST 100
++#define MAXQUEST 250 // must match MAXQUEST in the server (questlog.h)
+ 
+ #define MAXEF 64
+ 
+diff --git a/src/client/protocol.c b/src/client/protocol.c
+index 4ad247a..87e37df 100644
+--- a/src/client/protocol.c
++++ b/src/client/protocol.c
+@@ -1260,7 +1260,7 @@ void process(unsigned char *buf, int size)
+ 				break;
+ 			case SV_QUESTLOG:
+ 				sv_questlog(buf);
+-				len = 101 + sizeof(struct shrine_ppd);
++				len = 1 + sizeof(struct quest) * MAXQUEST + sizeof(struct shrine_ppd);
+ 				break;
+ 			case SV_PROTOCOL:
+ 				len = 2;
+@@ -1485,7 +1485,7 @@ uint32_t prefetch(unsigned char *buf, int size)
+ 				len = 5;
+ 				break;
+ 			case SV_QUESTLOG:
+-				len = 101 + sizeof(struct shrine_ppd);
++				len = 1 + sizeof(struct quest) * MAXQUEST + sizeof(struct shrine_ppd);
+ 				break;
+ 			case SV_PROTOCOL:
+ 				sv_protocol(buf);
+diff --git a/src/gui/gui.h b/src/gui/gui.h
+index c604fbc..c8555e0 100644
+--- a/src/gui/gui.h
++++ b/src/gui/gui.h
+@@ -75,6 +75,16 @@ void options_display(void);
+ void options_window_changed(void);
+ void options_set_sfx_volume(int percent);
+ 
++// Questlog window (questlog.c)
++void questwin_open(void);
++void questwin_close(void);
++void questwin_toggle(void);
++int questwin_is_open(void);
++int questwin_over(int x, int y);
++int questwin_over_control(int x, int y);
++int questwin_mouse(int what, int x, int y, int delta);
++void questwin_display(void);
++
+ extern int (*get_skltab_sep)(int i);
+ DLL_EXPORT int _get_skltab_sep(int i);
+ extern int (*get_skltab_index)(int n);
+diff --git a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+index 01c074d..1e161b0 100644
+--- a/src/gui/gui_buttons.c
++++ b/src/gui/gui_buttons.c
+@@ -860,15 +860,11 @@ void exec_cmd(int cmd, int a)
+ 		} else {
+ 			display_help = 1;
+ 			display_quest = 0;
++			questwin_close();
+ 		}
+ 		return;
+ 	case CMD_QUEST:
+-		if (display_quest) {
+-			display_quest = 0;
+-		} else {
+-			display_quest = 1;
+-			display_help = 0;
+-		}
++		questwin_toggle();
+ 		return;
+ 
+ 	case CMD_EXIT:
+@@ -1321,13 +1317,16 @@ void set_cmd_states(void)
+ 		return;
+ 	}
+ 
+-	if (options_is_open()) {
+-		// the options window is on top and takes the mouse
++	if (options_is_open() || questwin_over(mousex, mousey)) {
++		// the options window is on top and takes the mouse, the questlog window when the mouse is over it
+ 		butsel = invsel = weasel = consel = sklsel = sklsel2 = telsel = helpsel = colsel = skl_look_sel = questsel =
+ 		    actsel = -1;
+ 		mapsel = itmsel = chrsel = MAXMN;
+ 		lcmd = rcmd = CMD_NONE;
+-		set_cmd_cursor(options_over_control(mousex, mousey) ? CMD_OPTIONS : CMD_NONE);
++		set_cmd_cursor(
++		    options_over_control(mousex, mousey) || (!options_is_open() && questwin_over_control(mousex, mousey))
++		        ? CMD_OPTIONS
++				: CMD_NONE);
+ 		return;
+ 	}
+ 
+diff --git a/src/gui/gui_core.c b/src/gui/gui_core.c
+index 8a602df..f1de94b 100644
+--- a/src/gui/gui_core.c
++++ b/src/gui/gui_core.c
+@@ -402,6 +402,7 @@ int main_loop(void)
+ 				display();
+ 				amod_frame();
+ 				display_mouseover();
++				questwin_display();
+ 				options_display();
+ 				minimap_update();
+ 			}
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index 155267f..01faac3 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -34,6 +34,7 @@ void gui_sdl_keyproc(SDL_Keycode wparam)
+ 			options_close();
+ 			return;
+ 		}
++		questwin_close();
+ 		cmd_stop();
+ 		context_stop();
+ 		show_look = 0;
+@@ -87,12 +88,7 @@ void gui_sdl_keyproc(SDL_Keycode wparam)
+ 		return;
+ 
+ 	case SDLK_F9:
+-		if (display_quest) {
+-			display_quest = 0;
+-		} else {
+-			display_help = 0;
+-			display_quest = 1;
+-		}
++		questwin_toggle();
+ 		return;
+ 
+ 	case SDLK_F10:
+@@ -106,6 +102,7 @@ void gui_sdl_keyproc(SDL_Keycode wparam)
+ 			display_help = 0;
+ 		} else {
+ 			display_quest = 0;
++			questwin_close();
+ 			display_help = 1;
+ 		}
+ 		return;
+@@ -312,6 +309,15 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		}
+ 		return;
+ 	}
++	// so does the questlog window, for clicks inside it
++	if (what != SDL_MOUM_NONE && questwin_mouse(what, mousex, mousey, local_y)) {
++		if (what == SDL_MOUM_LUP) {
++			vk_lbut = 0;
++		} else if (what == SDL_MOUM_RUP) {
++			vk_rbut = 0;
++		}
++		return;
++	}
+ 
+ 	switch (what) {
+ 	case SDL_MOUM_NONE:
+@@ -332,6 +338,7 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		mousey -= render_offset_y();
+ 
+ 		options_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
++		questwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 
+ 		if (butsel != -1 && vk_lbut && (but[butsel].flags & BUTF_MOVEEXEC)) {
+ 			exec_cmd(lcmd, 0);
+diff --git a/src/gui/gui_private.h b/src/gui/gui_private.h
+index 7d7fb58..d3234bd 100644
+--- a/src/gui/gui_private.h
++++ b/src/gui/gui_private.h
+@@ -486,6 +486,11 @@ int16_t tactics2immune(int val);
+ int16_t tactics2spell(int val);
+ 
+ int do_display_questlog(int nr);
++
++// window drawing shared by the Options and Questlog windows (options.c)
++void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border);
++void gui_draw_panel(int x, int y, int w, int h, int title_h);
++
+ void display_action(void);
+ void display_selfbars(void);
+ 
+diff --git a/src/gui/hover.c b/src/gui/hover.c
+index e230f4a..23c5ee4 100644
+--- a/src/gui/hover.c
++++ b/src/gui/hover.c
+@@ -45,7 +45,7 @@ void display_mouseover(void)
+ 	if (mousex < 0 || mousex >= XRES || mousey < 0 || mousey >= YRES || !sdl_has_focus()) {
+ 		return;
+ 	}
+-	if (options_is_open()) {
++	if (options_is_open() || questwin_over(mousex, mousey)) {
+ 		return;
+ 	}
+ 
+diff --git a/src/gui/options.c b/src/gui/options.c
+index 64a7e09..d3d6e7f 100644
+--- a/src/gui/options.c
++++ b/src/gui/options.c
+@@ -499,7 +499,7 @@ int options_mouse(int what, int x, int y, int delta)
+ 	}
+ }
+ 
+-static void draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border)
++void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border)
+ {
+ 	render_rect(sx, sy, ex, ey, fill);
+ 	render_line(sx, sy, ex, sy, border);
+@@ -519,7 +519,7 @@ static void draw_slider(int row, int value, int hover, const char *label)
+ 
+ 	render_rect(cx, y + 4, cx + SLD_W, y + 7, IRGB(6, 5, 3));
+ 	render_rect(cx, y + 4, kx, y + 7, gold);
+-	draw_box(kx - 3, y - 1, kx + 3, y + 11, hover ? whitecolor : IRGB(22, 20, 16), IRGB(4, 3, 2));
++	gui_draw_box(kx - 3, y - 1, kx + 3, y + 11, hover ? whitecolor : IRGB(22, 20, 16), IRGB(4, 3, 2));
+ 
+ 	render_text_fmt(cx + SLD_W + 12, y, textcolor, 0, "%d%%", value);
+ }
+@@ -532,10 +532,10 @@ static void draw_selector(int row, const char *label, const char *value, int ena
+ 
+ 	render_text(px + 16, y, enabled ? textcolor : graycolor, 0, label);
+ 
+-	draw_box(cx, y - 2, cx + SEL_W, y + 11, IRGB(5, 4, 3), IRGB(14, 11, 6));
++	gui_draw_box(cx, y - 2, cx + SEL_W, y + 11, IRGB(5, 4, 3), IRGB(14, 11, 6));
+ 	if (enabled) {
+-		draw_box(cx, y - 2, cx + 14, y + 11, hover_l ? IRGB(16, 12, 6) : IRGB(10, 8, 4), IRGB(14, 11, 6));
+-		draw_box(
++		gui_draw_box(cx, y - 2, cx + 14, y + 11, hover_l ? IRGB(16, 12, 6) : IRGB(10, 8, 4), IRGB(14, 11, 6));
++		gui_draw_box(
+ 		    cx + SEL_W - 14, y - 2, cx + SEL_W, y + 11, hover_r ? IRGB(16, 12, 6) : IRGB(10, 8, 4), IRGB(14, 11, 6));
+ 		render_text(cx + 7, y, whitecolor, RENDER_ALIGN_CENTER, "<");
+ 		render_text(cx + SEL_W - 7, y, whitecolor, RENDER_ALIGN_CENTER, ">");
+@@ -547,7 +547,7 @@ static void draw_button(int sx, int sy, const char *text, int enabled, int hover
+ {
+ 	unsigned short fill = !enabled ? IRGB(6, 5, 4) : (hover ? IRGB(18, 13, 6) : IRGB(11, 8, 4));
+ 
+-	draw_box(sx, sy, sx + BTN_W, sy + BTN_H, fill, IRGB(20, 16, 8));
++	gui_draw_box(sx, sy, sx + BTN_W, sy + BTN_H, fill, IRGB(20, 16, 8));
+ 	render_text(sx + BTN_W / 2, sy + 3, enabled ? whitecolor : graycolor, RENDER_ALIGN_CENTER, text);
+ }
+ 
+@@ -568,7 +568,7 @@ static int corner_inset(int i, int h)
+ 
+ // Window with rounded corners, a see-through body and a title bar of title_h rows.
+ // Drawn one row at a time so no pixel is blended twice.
+-static void draw_panel(int x, int y, int w, int h, int title_h)
++void gui_draw_panel(int x, int y, int w, int h, int title_h)
+ {
+ 	unsigned short border = IRGB(20, 16, 8);
+ 	int i, in, edge;
+@@ -623,7 +623,7 @@ void options_display(void)
+ 	render_push_clip();
+ 	render_set_clip(0, 0, XRES, YRES);
+ 
+-	draw_panel(px, py, PW + 1, PH + 1, 18);
++	gui_draw_panel(px, py, PW + 1, PH + 1, 18);
+ 
+ 	render_text(px + PW / 2, py + 4, whitecolor, RENDER_ALIGN_CENTER, "Options");
+ 	render_text(px + PW - 11, py + 4, hov == H_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
+diff --git a/src/gui/questlog.c b/src/gui/questlog.c
+index 9aaa738..ec01572 100644
+--- a/src/gui/questlog.c
++++ b/src/gui/questlog.c
+@@ -18,6 +18,7 @@
+ #include "game/game.h"
+ #include "client/client.h"
+ #include "client/protocol.h"
++#include "sdl/sdl.h"
+ 
+ static int havequest = 0;
+ 
+@@ -59,9 +60,9 @@ struct questlog _game_questlog[] = {
+     {"Join the Tribe", 63, 80, "Kalanur", "Nomad Plains", 10000, 0}, // 32,
+     {"Searching Sarkilar", 63, 80, "Kir Laas", "Nomad Plains", 450000, 0}, // 33,
+     {"A Golden Statue", 72, 90, "Kir Garan", "Nomad Plains", 280000, 0}, // 34,
+-    {"Smuggler Book", 10, 15, "Imp. Commander", "Below Aston 2", 1000, QLF_REPEATABLE}, // 35,
+-    {"Contraband", 10, 15, "Imp. Commander", "Below Aston 2", 0, 0}, // 36, exp awarded in driver, 5000 total
+-    {"Smuggler Leader", 10, 15, "Imp. Commander", "Below Aston 2", 2000, QLF_REPEATABLE}, // 37,
++    {"Smuggler Book", 14, 17, "Imp. Commander", "Below Aston 2", 1000, QLF_REPEATABLE}, // 35,
++    {"Contraband", 14, 17, "Imp. Commander", "Below Aston 2", 0, 0}, // 36, exp awarded in driver, 5000 total
++    {"Smuggler Leader", 14, 17, "Imp. Commander", "Below Aston 2", 2000, QLF_REPEATABLE}, // 37,
+     {"The Family Heirloom", 32, 40, "Aristocrat", "Bran. Forest", 40000, QLF_REPEATABLE}, // 38,
+     {"Bear Hunt - Again", 32, 36, "Yoatin", "Bran. Forest", 40000, QLF_REPEATABLE}, // 39,
+     {"The Jewels of Brannington ", 34, 40, "Count B.", "Brannington", 0,
+@@ -85,28 +86,32 @@ struct questlog _game_questlog[] = {
+     {"Find the Keyparts", 55, 65, "Glori", "Caligar", 80000, 0}, // 57,
+     {"Assemble the Key", 55, 65, "Glori", "Caligar", 80000, 0}, // 58,
+     {"Amazon Invaders", 55, 65, "Homdem", "Caligar", 80000, 0}, // 59,
+-    {"The Emperor's Plaque", 55, 65, "Kelly", "Aston", 240000, 0}, // 60,
++    {"The Emperor's Plaque", 55, 65, "Kelly", "Aston", 160000, 0}, // 60,
+ 
+     {"The Imperial Vault", 26, 28, "Carlos", "Aston", 20000, 0}, // 61,
+     {"Tunnel Magics", 26, 28, "Rouven", "Imperial Vault", 10000, 0}, // 62,
+     {"Chronicles of Seyan", 26, 28, "Rouven", "Imperial Vault", 10000, 0}, // 63,
+ 
+-    {"Finding Arkhata", 47, 55, "Guard", "Brannington", 60000, 0}, // 64,
+-    {"Rammy's Crown", 48, 58, "Rammy", "Arkhata", 60000, 0}, // 65,
+-    {"Ishtar's Bracelet", 49, 59, "Jaz", "Arkhata", 60000, 0}, // 66,
+-    {"Queen Fiona's Ring", 50, 60, "Queen Fiona", "Arkhata", 60000, 0}, // 67,
+-    {"A Shopkeeper's Fright", 51, 61, "Ramin", "Arkhata", 60000, 0}, // 68,
+-    {"The Monks' Request", 52, 62, "Johnatan", "Arkhata", 60000, 0}, // 69,
+-    {"The Book Eater", 53, 63, "Tracy", "Arkhata", 60000, 0}, // 70,
+-    {"Entrance Passes", 54, 64, "Rammy", "Arkhata", 90000, 0}, // 71,
+-    {"The Source", 60, 70, "Jada", "Arkhata", 120000, 0}, // 72,
+-    {"Ceremonial Pot", 48, 58, "Pot Maker", "Arkhata", 60000, 0}, // 73,
+-    {"The Lost Secrets", 49, 59, "Thai Pan", "Arkhata", 60000, 0}, // 74,
+-    {"A Kidnapped Student", 53, 63, "Trainer", "Arkhata", 60000, 0}, // 75,
+-    {"The Traitors", 53, 63, "Clerk", "Arkhata", 60000, 0}, // 76,
++    {"Finding Arkhata", 48, 58, "Guard", "Brannington", 60000, 0}, // 64,
++    {"Rammy's Crown", 50, 60, "Rammy", "Arkhata", 70000, 0}, // 65,
++    {"Ishtar's Bracelet", 50, 60, "Jaz", "Arkhata", 70000, 0}, // 66,
++    {"Queen Fiona's Ring", 55, 65, "Queen Fiona", "Arkhata", 85000, 0}, // 67,
++    {"A Shopkeeper's Fright", 58, 68, "Ramin", "Arkhata", 100000, 0}, // 68,
++    {"The Monks' Request", 58, 68, "Johnatan", "Arkhata", 50000, 0}, // 69,
++    {"The Book Eater", 58, 68, "Tracy", "Arkhata", 100000, 0}, // 70,
++    {"Entrance Passes", 58, 66, "Rammy", "Arkhata", 75000, 0}, // 71,
++    {"The Source", 70, 80, "Jada", "Arkhata", 175000, 0}, // 72,
++    {"Ceremonial Pot", 52, 62, "Pot Maker", "Arkhata", 75000, 0}, // 73,
++    {"The Lost Secrets", 52, 62, "Thai Pan", "Arkhata", 75000, 0}, // 74,
++    {"A Kidnapped Student", 63, 73, "Trainer", "Arkhata", 130000, 0}, // 75,
++    {"The Traitors", 60, 70, "Clerk", "Arkhata", 120000, 0}, // 76,
+     {"The Blue Harpy", 58, 68, "Hunter", "Arkhata", 60000, 0}, // 77,
+     {"The Mysterious Language", 60, 65, "Johnatan", "Arkhata", 60000, 0}, // 78,
+ 
++    // quests added on this server (questlog.c in the server source)
++    {"Forest Robbers", 20, 30, "Boreas", "Forest", 25000, QLF_REPEATABLE}, // 79,
++    {"Warm Clothes", 70, 120, "Blake", "Minoa", 600000, 0}, // 80,
++
+ 
+ };
+ DLL_EXPORT struct questlog *game_questlog = _game_questlog;
+@@ -411,3 +416,639 @@ void quest_select(int nr)
+ 		cmd_reopen_quest(questonscreen[nr]);
+ 	}
+ }
++
++/*
++ * Questlog window
++ *
++ * A window in the style of the Options window that lists the quests the player
++ * knows, with filters for status, area and level and a choice of sort order.
++ * The second tab shows the random dungeon shrines (do_display_random()).
++ * The window does not block the game: clicks outside it go to the game.
++ */
++
++#define QW 440 // window size
++#define QH 330
++
++#define QW_TITLE 18
++#define QW_TABS  22
++#define QW_ROW1  42 // filter rows
++#define QW_ROW2  58
++#define QW_HEAD  78 // column headers
++#define QW_LIST  92 // first list row
++#define QW_LINE  12 // list row height
++#define QW_INFO  (QH - 52) // details of the selected quest
++
++#define COL_NAME  12
++#define COL_AREA  190
++#define COL_LEVEL 296
++#define COL_STAT  346
++
++#define SEL_LBL_W 46
++#define SEL_BOX_W 150
++
++enum {
++	Q_NONE,
++	Q_CLOSE,
++	Q_TITLE,
++	Q_TAB_QUESTS,
++	Q_TAB_RANDOM,
++	Q_SEL_L, // + selector * 3
++	Q_SEL_R = Q_SEL_L + 4,
++	Q_SEL_M = Q_SEL_R + 4,
++	Q_SCROLL_UP = Q_SEL_M + 4,
++	Q_SCROLL_DOWN,
++	Q_REOPEN,
++	Q_ROW, // + visible row
++};
++
++enum { QS_STATUS, QS_AREA, QS_LEVEL, QS_SORT };
++
++static const char *qs_label[] = {"Status", "Area", "Level", "Sort"};
++static const char *status_name[] = {"All quests", "Open", "Completed", "Can be redone"};
++static const char *level_name[] = {"All levels", "My level", "Up to my level", "Above my level"};
++static const char *sort_name[] = {"Open first", "Level", "Area", "Name"};
++
++static int qw_open = 0, qw_tab = 0;
++static int qw_dx = 0, qw_dy = 0; // offset from the centered position, after dragging
++static int qw_drag = 0, qw_drag_x, qw_drag_y;
++static int qw_pressed = Q_NONE;
++static int qw_scroll = 0, qw_sel = -1;
++static int f_status = 0, f_level = 0, f_sort = 0;
++static char f_area[64] = ""; // empty: all areas
++
++static int qw_list[MAXQUEST], qw_cnt = 0;
++static const char *qw_areas[MAXQUEST];
++static int qw_area_cnt = 0;
++
++static int qw_x(void)
++{
++	int x = (XRES - QW) / 2 + qw_dx;
++	return x < 0 ? 0 : (x > XRES - QW - 1 ? XRES - QW - 1 : x);
++}
++
++static int qw_y(void)
++{
++	int y = (YRES - QH) / 2 - 10 + qw_dy;
++	return y < 0 ? 0 : (y > YRES - QH - 1 ? YRES - QH - 1 : y);
++}
++
++static int qw_rows(void)
++{
++	return (QW_INFO - 6 - QW_LIST) / QW_LINE;
++}
++
++static int quest_known(int n)
++{
++	return (quest[n].flags == QF_OPEN && quest[n].done < 10) || quest[n].flags == QF_DONE;
++}
++
++static int quest_redo(int n)
++{
++	return (game_questlog[n].flags & QLF_REPEATABLE) && (quest[n].flags & QF_DONE) && quest[n].done < 10;
++}
++
++static int player_level(void)
++{
++	return exp2level((int)experience);
++}
++
++static int qw_cmp(const void *a, const void *b)
++{
++	int va = *(const int *)a, vb = *(const int *)b, d;
++	const struct questlog *qa = &game_questlog[va], *qb = &game_questlog[vb];
++
++	switch (f_sort) {
++	case 0: // open first, then highest level first (the old questlog order)
++		d = (quest[va].flags == QF_DONE) - (quest[vb].flags == QF_DONE);
++		if (d) {
++			return d;
++		}
++		if (qa->minlevel != qb->minlevel) {
++			return qb->minlevel - qa->minlevel;
++		}
++		break;
++	case 1:
++		if (qa->minlevel != qb->minlevel) {
++			return qa->minlevel - qb->minlevel;
++		}
++		if (qa->maxlevel != qb->maxlevel) {
++			return qa->maxlevel - qb->maxlevel;
++		}
++		break;
++	case 2:
++		if ((d = strcmp(qa->area, qb->area)) != 0) {
++			return d;
++		}
++		if (qa->minlevel != qb->minlevel) {
++			return qa->minlevel - qb->minlevel;
++		}
++		break;
++	case 3:
++		if ((d = strcmp(qa->name, qb->name)) != 0) {
++			return d;
++		}
++		break;
++	}
++	return va - vb;
++}
++
++static int area_cmp(const void *a, const void *b)
++{
++	return strcmp(*(const char *const *)a, *(const char *const *)b);
++}
++
++// Build the filtered and sorted list, and the list of areas to filter by
++static void qw_build(void)
++{
++	int n, i, lvl = player_level();
++
++	qw_area_cnt = 0;
++	qw_cnt = 0;
++
++	for (n = 0; n < *game_questcount && n < MAXQUEST; n++) {
++		if (!quest_known(n)) {
++			continue;
++		}
++
++		for (i = 0; i < qw_area_cnt; i++) {
++			if (!strcmp(qw_areas[i], game_questlog[n].area)) {
++				break;
++			}
++		}
++		if (i == qw_area_cnt) {
++			qw_areas[qw_area_cnt++] = game_questlog[n].area;
++		}
++
++		if (f_status == 1 && quest[n].flags != QF_OPEN) {
++			continue;
++		}
++		if (f_status == 2 && quest[n].flags != QF_DONE) {
++			continue;
++		}
++		if (f_status == 3 && !quest_redo(n)) {
++			continue;
++		}
++		if (f_area[0] && strcmp(f_area, game_questlog[n].area)) {
++			continue;
++		}
++		if (f_level == 1 && (lvl < game_questlog[n].minlevel || lvl > game_questlog[n].maxlevel)) {
++			continue;
++		}
++		if (f_level == 2 && game_questlog[n].minlevel > lvl) {
++			continue;
++		}
++		if (f_level == 3 && game_questlog[n].minlevel <= lvl) {
++			continue;
++		}
++		qw_list[qw_cnt++] = n;
++	}
++
++	qsort(qw_areas, (size_t)qw_area_cnt, sizeof(qw_areas[0]), area_cmp);
++	qsort(qw_list, (size_t)qw_cnt, sizeof(qw_list[0]), qw_cmp);
++
++	if (qw_scroll > qw_cnt - qw_rows()) {
++		qw_scroll = qw_cnt - qw_rows();
++	}
++	if (qw_scroll < 0) {
++		qw_scroll = 0;
++	}
++}
++
++static const char *selector_value(int s, char *buf, size_t size)
++{
++	switch (s) {
++	case QS_STATUS:
++		return status_name[f_status];
++	case QS_AREA:
++		return f_area[0] ? f_area : "All areas";
++	case QS_LEVEL:
++		if (f_level == 0) {
++			return level_name[0];
++		}
++		snprintf(buf, size, "%s (%d)", level_name[f_level], player_level());
++		return buf;
++	default:
++		return sort_name[f_sort];
++	}
++}
++
++static void selector_step(int s, int dir)
++{
++	int i;
++
++	switch (s) {
++	case QS_STATUS:
++		f_status = (f_status + 4 + dir) % 4;
++		break;
++	case QS_LEVEL:
++		f_level = (f_level + 4 + dir) % 4;
++		break;
++	case QS_SORT:
++		f_sort = (f_sort + 4 + dir) % 4;
++		break;
++	case QS_AREA:
++		// "All areas" is position -1, then the areas in alphabetical order
++		for (i = 0; i < qw_area_cnt && strcmp(qw_areas[i], f_area); i++) {
++			;
++		}
++		if (!f_area[0]) {
++			i = -1;
++		}
++		i += dir;
++		if (i < -1) {
++			i = qw_area_cnt - 1;
++		}
++		if (i >= qw_area_cnt) {
++			i = -1;
++		}
++		snprintf(f_area, sizeof(f_area), "%s", i < 0 ? "" : qw_areas[i]);
++		break;
++	}
++	qw_scroll = 0;
++	qw_sel = -1;
++}
++
++// position of selector s: label at (x, y), box from bx to bx + SEL_BOX_W
++static void selector_pos(int s, int *x, int *y, int *bx)
++{
++	*x = qw_x() + (s & 1 ? 226 : 10);
++	*y = qw_y() + (s & 2 ? QW_ROW2 : QW_ROW1);
++	*bx = *x + SEL_LBL_W;
++}
++
++int questwin_is_open(void)
++{
++	return qw_open;
++}
++
++void questwin_open(void)
++{
++	if (!havequest) {
++		cmd_getquestlog();
++		havequest = 1;
++	}
++	options_close();
++	display_help = 0;
++	display_quest = 0;
++	qw_open = 1;
++}
++
++void questwin_close(void)
++{
++	qw_open = 0;
++	qw_drag = 0;
++	qw_pressed = Q_NONE;
++}
++
++void questwin_toggle(void)
++{
++	if (qw_open) {
++		questwin_close();
++	} else {
++		questwin_open();
++	}
++}
++
++int questwin_over(int x, int y)
++{
++	int px = qw_x(), py = qw_y();
++
++	return qw_open && x >= px && x <= px + QW && y >= py && y <= py + QH;
++}
++
++static int qw_in(int x, int y, int sx, int sy, int ex, int ey)
++{
++	return x >= sx && x <= ex && y >= sy && y <= ey;
++}
++
++static int qw_hit(int x, int y)
++{
++	int px = qw_x(), py = qw_y(), s, lx, ly, bx, r;
++
++	if (!questwin_over(x, y)) {
++		return Q_NONE;
++	}
++	if (qw_in(x, y, px + QW - 18, py + 2, px + QW - 4, py + 15)) {
++		return Q_CLOSE;
++	}
++	if (y < py + QW_TITLE) {
++		return Q_TITLE;
++	}
++	if (qw_in(x, y, px + 10, py + QW_TABS - 2, px + 80, py + QW_TABS + 11)) {
++		return Q_TAB_QUESTS;
++	}
++	if (qw_in(x, y, px + 84, py + QW_TABS - 2, px + 184, py + QW_TABS + 11)) {
++		return Q_TAB_RANDOM;
++	}
++	if (qw_tab != 0) {
++		return Q_NONE;
++	}
++
++	for (s = 0; s < 4; s++) {
++		selector_pos(s, &lx, &ly, &bx);
++		if (y >= ly - 2 && y <= ly + 11) {
++			if (x >= bx && x <= bx + 14) {
++				return Q_SEL_L + s;
++			}
++			if (x >= bx + SEL_BOX_W - 14 && x <= bx + SEL_BOX_W) {
++				return Q_SEL_R + s;
++			}
++			if (x > bx + 14 && x < bx + SEL_BOX_W - 14) {
++				return Q_SEL_M + s;
++			}
++		}
++	}
++
++	if (x >= px + QW - 14 && x <= px + QW - 4) {
++		if (qw_in(x, y, px + QW - 14, py + QW_LIST, px + QW - 4, py + QW_LIST + 8)) {
++			return Q_SCROLL_UP;
++		}
++		if (qw_in(x, y, px + QW - 14, py + QW_LIST + qw_rows() * QW_LINE - 9, px + QW - 4,
++		        py + QW_LIST + qw_rows() * QW_LINE)) {
++			return Q_SCROLL_DOWN;
++		}
++		return Q_NONE;
++	}
++
++	if (y >= py + QW_LIST && y < py + QW_LIST + qw_rows() * QW_LINE && x >= px + 6) {
++		r = (y - py - QW_LIST) / QW_LINE;
++		if (qw_scroll + r < qw_cnt) {
++			return Q_ROW + r;
++		}
++	}
++
++	if (qw_sel != -1 && quest_redo(qw_sel) && qw_in(x, y, px + QW - 84, py + QH - 26, px + QW - 12, py + QH - 10)) {
++		return Q_REOPEN;
++	}
++	return Q_NONE;
++}
++
++int questwin_over_control(int x, int y)
++{
++	int h = qw_hit(x, y);
++	return h != Q_NONE && h != Q_TITLE;
++}
++
++static void qw_click(int h)
++{
++	if (h == Q_CLOSE) {
++		questwin_close();
++	} else if (h == Q_TAB_QUESTS) {
++		qw_tab = 0;
++	} else if (h == Q_TAB_RANDOM) {
++		qw_tab = 1;
++	} else if (h >= Q_SEL_L && h < Q_SEL_L + 4) {
++		selector_step(h - Q_SEL_L, -1);
++	} else if (h >= Q_SEL_R && h < Q_SEL_R + 4) {
++		selector_step(h - Q_SEL_R, 1);
++	} else if (h >= Q_SEL_M && h < Q_SEL_M + 4) {
++		selector_step(h - Q_SEL_M, 1);
++	} else if (h == Q_SCROLL_UP) {
++		qw_scroll -= qw_rows() - 1;
++	} else if (h == Q_SCROLL_DOWN) {
++		qw_scroll += qw_rows() - 1;
++	} else if (h == Q_REOPEN) {
++		if (qw_sel != -1 && quest_redo(qw_sel)) {
++			cmd_reopen_quest(qw_sel);
++		}
++	} else if (h >= Q_ROW) {
++		int i = qw_scroll + h - Q_ROW;
++		if (i < qw_cnt) {
++			qw_sel = (qw_sel == qw_list[i]) ? -1 : qw_list[i];
++		}
++	}
++}
++
++// Mouse input. Returns 1 if the event belongs to the questlog window. Clicks
++// outside the window are left to the game.
++int questwin_mouse(int what, int x, int y, int delta)
++{
++	int h;
++
++	if (!qw_open) {
++		return 0;
++	}
++
++	if (what == SDL_MOUM_NONE) {
++		if (qw_drag) {
++			qw_dx += x - qw_drag_x;
++			qw_dy += y - qw_drag_y;
++			qw_drag_x = x;
++			qw_drag_y = y;
++		}
++		return 0;
++	}
++
++	if (what == SDL_MOUM_LUP && (qw_drag || qw_pressed != Q_NONE)) {
++		qw_drag = 0;
++		h = qw_hit(x, y);
++		if (h != Q_NONE && h == qw_pressed) {
++			qw_click(h);
++		}
++		qw_pressed = Q_NONE;
++		return 1;
++	}
++
++	if (!questwin_over(x, y)) {
++		return 0;
++	}
++
++	switch (what) {
++	case SDL_MOUM_LDOWN:
++		h = qw_hit(x, y);
++		if (h == Q_TITLE) {
++			// keep the window where it is on screen, then follow the mouse
++			qw_dx = qw_x() - (XRES - QW) / 2;
++			qw_dy = qw_y() - ((YRES - QH) / 2 - 10);
++			qw_drag = 1;
++			qw_drag_x = x;
++			qw_drag_y = y;
++		}
++		qw_pressed = h;
++		return 1;
++	case SDL_MOUM_WHEEL:
++		if (qw_tab == 0) {
++			qw_scroll -= delta * 3;
++		}
++		return 1;
++	default:
++		return 1;
++	}
++}
++
++static void qw_selector(int s, int hov)
++{
++	int lx, ly, bx;
++	char buf[64];
++	unsigned short edge = IRGB(14, 11, 6);
++
++	selector_pos(s, &lx, &ly, &bx);
++	render_text(lx, ly, textcolor, 0, qs_label[s]);
++
++	gui_draw_box(bx, ly - 2, bx + SEL_BOX_W, ly + 11, IRGB(5, 4, 3), edge);
++	gui_draw_box(bx, ly - 2, bx + 14, ly + 11, hov == Q_SEL_L + s ? IRGB(16, 12, 6) : IRGB(10, 8, 4), edge);
++	gui_draw_box(bx + SEL_BOX_W - 14, ly - 2, bx + SEL_BOX_W, ly + 11,
++	    hov == Q_SEL_R + s ? IRGB(16, 12, 6) : IRGB(10, 8, 4), edge);
++	render_text(bx + 7, ly, whitecolor, RENDER_ALIGN_CENTER, "<");
++	render_text(bx + SEL_BOX_W - 7, ly, whitecolor, RENDER_ALIGN_CENTER, ">");
++	render_text(bx + SEL_BOX_W / 2, ly, hov == Q_SEL_M + s ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER,
++	    selector_value(s, buf, sizeof(buf)));
++}
++
++static void qw_tab_button(int sx, int ex, int y, const char *text, int active, int hover)
++{
++	unsigned short fill = active ? IRGB(18, 13, 6) : (hover ? IRGB(12, 9, 4) : IRGB(7, 5, 3));
++
++	gui_draw_box(sx, y - 2, ex, y + 11, fill, IRGB(20, 16, 8));
++	render_text((sx + ex) / 2, y, active || hover ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, text);
++}
++
++static void qw_display_list(int px, int py, int hov)
++{
++	int r, n, y, rows = qw_rows(), lvl = player_level();
++	unsigned short col, line = IRGB(10, 8, 4);
++	char buf[80];
++
++	render_text(px + COL_NAME, py + QW_HEAD, IRGB(31, 24, 10), 0, "Quest");
++	render_text(px + COL_AREA, py + QW_HEAD, IRGB(31, 24, 10), 0, "Area");
++	render_text(px + COL_LEVEL, py + QW_HEAD, IRGB(31, 24, 10), 0, "Level");
++	render_text(px + COL_STAT, py + QW_HEAD, IRGB(31, 24, 10), 0, "Status");
++	render_line(px + 8, py + QW_HEAD + 11, px + QW - 8, py + QW_HEAD + 11, line);
++
++	for (r = 0; r < rows && qw_scroll + r < qw_cnt; r++) {
++		n = qw_list[qw_scroll + r];
++		y = py + QW_LIST + r * QW_LINE;
++
++		if (n == qw_sel) {
++			render_rect_alpha(px + 6, y - 1, px + QW - 16, y + QW_LINE - 1, IRGB(18, 13, 6), 110);
++		} else if (hov == Q_ROW + r) {
++			render_rect_alpha(px + 6, y - 1, px + QW - 16, y + QW_LINE - 1, IRGB(12, 9, 4), 90);
++		}
++
++		render_text(px + COL_NAME, y, whitecolor, 0, game_questlog[n].name);
++		render_text(px + COL_AREA, y, lightgraycolor, 0, game_questlog[n].area);
++
++		// level range: white if it suits the player, red if too high, gray if below
++		if (lvl < game_questlog[n].minlevel) {
++			col = IRGB(31, 12, 10);
++		} else if (lvl > game_questlog[n].maxlevel) {
++			col = graycolor;
++		} else {
++			col = whitecolor;
++		}
++		render_text_fmt(px + COL_LEVEL, y, col, 0, "%d-%d", game_questlog[n].minlevel, game_questlog[n].maxlevel);
++
++		if (quest[n].flags == QF_OPEN) {
++			render_text(px + COL_STAT, y, IRGB(31, 26, 8), 0, "Open");
++		} else if (quest_redo(n)) {
++			snprintf(buf, sizeof(buf), "Done (%dx), redo", quest[n].done);
++			render_text(px + COL_STAT, y, lightbluecolor, 0, buf);
++		} else {
++			snprintf(buf, sizeof(buf), quest[n].done > 1 ? "Done (%dx)" : "Done", quest[n].done);
++			render_text(px + COL_STAT, y, IRGB(12, 28, 12), 0, buf);
++		}
++	}
++
++	if (qw_cnt == 0) {
++		render_text(px + QW / 2, py + QW_LIST + 30, lightgraycolor, RENDER_ALIGN_CENTER,
++		    havequest ? "No quests match these filters." : "Your questlog is empty.");
++	}
++
++	// scrollbar
++	if (qw_cnt > rows) {
++		int top = py + QW_LIST, h = rows * QW_LINE;
++		int th = h * rows / qw_cnt, ty = top + (h - th) * qw_scroll / (qw_cnt - rows);
++		if (th < 8) {
++			th = 8;
++			ty = top + (h - th) * qw_scroll / (qw_cnt - rows);
++		}
++		render_rect_alpha(px + QW - 12, top, px + QW - 6, top + h, IRGB(6, 5, 3), 200);
++		gui_draw_box(px + QW - 12, ty, px + QW - 7, ty + th, IRGB(18, 14, 8), IRGB(8, 6, 3));
++	}
++}
++
++static void qw_display_info(int px, int py, int hov)
++{
++	int n = qw_sel, y = py + QW_INFO;
++	char buf[160];
++
++	render_line(px + 8, y - 4, px + QW - 8, y - 4, IRGB(10, 8, 4));
++
++	if (n == -1 || !quest_known(n)) {
++		snprintf(buf, sizeof(buf), "%d quest%s shown. Click a quest for details.", qw_cnt, qw_cnt == 1 ? "" : "s");
++		render_text(px + 12, y + 4, lightgraycolor, 0, buf);
++		return;
++	}
++
++	render_text(px + 12, y, whitecolor, 0, game_questlog[n].name);
++	snprintf(buf, sizeof(buf), "From %s in %s, for levels %d to %d.", game_questlog[n].giver, game_questlog[n].area,
++	    game_questlog[n].minlevel, game_questlog[n].maxlevel);
++	render_text(px + 12, y + 11, lightgraycolor, 0, buf);
++
++	if (game_questlog[n].flags & (QLF_REPEATABLE | QLF_XREPEAT)) {
++		snprintf(buf, sizeof(buf), "Done %d time%s, next time gives %d%% exp. %s.", quest[n].done,
++		    quest[n].done != 1 ? "s" : "", questproz(quest[n].done), (quest[n].flags & QF_DONE) ? "Done" : "Open");
++	} else {
++		snprintf(buf, sizeof(buf), "Not repeatable. %s.", (quest[n].flags & QF_DONE) ? "Done" : "Open");
++	}
++	render_text(px + 12, y + 22, lightgraycolor, 0, buf);
++	if ((game_questlog[n].flags & QLF_XREPEAT) && (quest[n].flags & QF_DONE)) {
++		render_text(px + 12, y + 33, graycolor, 0, "Can be done again with a junk item.");
++	}
++
++	if (quest_redo(n)) {
++		unsigned short fill = hov == Q_REOPEN ? IRGB(18, 13, 6) : IRGB(11, 8, 4);
++		gui_draw_box(px + QW - 84, py + QH - 26, px + QW - 12, py + QH - 10, fill, IRGB(20, 16, 8));
++		render_text(px + QW - 48, py + QH - 23, whitecolor, RENDER_ALIGN_CENTER, "Re-open");
++	}
++}
++
++void questwin_display(void)
++{
++	int px, py, hov, ox, oy;
++
++	if (!qw_open) {
++		return;
++	}
++#ifdef QUESTWIN_DEMO
++	for (int i = 0; i < 40; i++) {
++		quest[i].flags = (i % 3) ? QF_DONE : QF_OPEN;
++		quest[i].done = (i % 3) ? (unsigned char)(i % 4 + 1) : 0;
++	}
++#endif
++
++	qw_build();
++
++	px = qw_x();
++	py = qw_y();
++	hov = qw_hit(mousex, mousey);
++
++	render_push_clip();
++	render_set_clip(0, 0, XRES, YRES);
++
++	gui_draw_panel(px, py, QW + 1, QH + 1, QW_TITLE);
++	render_text(px + QW / 2, py + 4, whitecolor, RENDER_ALIGN_CENTER, "Questlog");
++	render_text(px + QW - 11, py + 4, hov == Q_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
++
++	qw_tab_button(px + 10, px + 80, py + QW_TABS, "Quests", qw_tab == 0, hov == Q_TAB_QUESTS);
++	qw_tab_button(px + 84, px + 184, py + QW_TABS, "Random dungeon", qw_tab == 1, hov == Q_TAB_RANDOM);
++
++	if (qw_tab == 0) {
++		for (int s = 0; s < 4; s++) {
++			qw_selector(s, hov);
++		}
++		qw_display_list(px, py, hov);
++		qw_display_info(px, py, hov);
++	} else {
++		// do_display_random() draws relative to the help window; point that at our window for a moment
++		ox = dot[DOT_HLP].x;
++		oy = dot[DOT_HLP].y;
++		dot[DOT_HLP].x = px + (QW - 214) / 2;
++		dot[DOT_HLP].y = py + QW_TABS + 6;
++		do_display_random();
++		dot[DOT_HLP].x = ox;
++		dot[DOT_HLP].y = oy;
++	}
++
++	render_pop_clip();
++}
+-- 
+2.43.0
+

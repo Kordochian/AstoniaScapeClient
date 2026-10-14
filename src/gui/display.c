@@ -1,0 +1,1771 @@
+/*
+ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
+ *
+ * Display Windows
+ *
+ * Equipment, inventory, text, ... windows.
+ */
+
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include <ctype.h>
+
+#include "astonia.h"
+#include "gui/gui.h"
+#include "gui/gui_private.h"
+#include "game/game.h"
+#include "client/client.h"
+#include "modder/modder.h"
+#include "sdl/sdl.h"
+
+char tutor_text[1024] = {""};
+int show_tutor = 0;
+
+int __textdisplay_sy;
+int __textdisplay_sx = 396;
+
+static void dx_drawtext_gold(int x, int y, unsigned short int color, int amount)
+{
+	if (amount > 99) {
+		render_text_fmt(x, y, color, RENDER_ALIGN_CENTER | RENDER_TEXT_FRAMED | RENDER_TEXT_SMALL, "%d.%02dG",
+		    amount / 100, amount % 100);
+	} else {
+		render_text_fmt(x, y, color, RENDER_ALIGN_CENTER | RENDER_TEXT_FRAMED | RENDER_TEXT_SMALL, "%ds", amount);
+	}
+}
+
+int gear_lock = 0;
+
+void display_wear_lock(void)
+{
+	gear_lock = 1 - gear_lock;
+	save_options();
+}
+
+// Copy a w x h piece of the top bar picture (sprite 999) at sprite position (fx, fy) to (x, y)
+static void copy_topbar(int fx, int fy, int x, int y, int w, int h)
+{
+	render_set_clip(x, y, x + w, y + h);
+	render_sprite(opt_sprite(999), x - fx, y - fy, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+}
+
+// "Settings" button in the top bar, left of Exit and as tall as it. It looks like the Help and
+// Questlog plates: pieces of the Help plate (columns 704-739, rows 22-30 of the top bar
+// picture) without its text, stretched to the button's height row by row.
+static void plate_column(int fx, int x, int y, int w, int h)
+{
+	int r;
+
+	for (r = 0; r < h; r++) {
+		copy_topbar(fx, 22 + (r * 8 + (h - 1) / 2) / (h - 1), x, y + r, w, 1);
+	}
+}
+
+static void display_options_button(void)
+{
+	int sx = dotx(DOT_TOP) + OPTIONS_BUT_X, sy = doty(DOT_TOP) + OPTIONS_BUT_Y, w = OPTIONS_BUT_W, x;
+
+	render_push_clip();
+	plate_column(704, sx, sy, 1, OPTIONS_BUT_H); // left edge
+	for (x = 1; x < w - 3; x += 9) {
+		plate_column(705, sx + x, sy, min(9, w - 3 - x), OPTIONS_BUT_H); // blank part, left of "Help"
+	}
+	plate_column(737, sx + w - 3, sy, 3, OPTIONS_BUT_H); // right edge
+	render_pop_clip();
+
+	if (butsel == BUT_OPTIONS || options_is_open()) {
+		render_rect_alpha(sx, sy, sx + w, sy + OPTIONS_BUT_H, whitecolor, 40);
+	}
+	render_text(sx + w / 2, sy + 1, blackcolor, RENDER_ALIGN_CENTER, "Settings");
+}
+
+void display_wear(void)
+{
+	int b;
+	unsigned int sprite;
+	unsigned short c1, c2, c3, shine;
+	unsigned char scale, cr, cg, cb, light, sat;
+	RenderFX fx;
+
+	for (b = BUT_WEA_BEG; b <= BUT_WEA_END; b++) {
+		int i = b - BUT_WEA_BEG;
+		int x = butx(b);
+		int y = buty(b);
+		int yt = y + 23;
+
+		render_sprite(opt_sprite(SPR_ITPAD), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		if (i == weasel) {
+			render_sprite(opt_sprite(SPR_ITSEL), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		}
+		if (item[weatab[i]]) {
+			bzero(&fx, sizeof(fx));
+
+			sprite =
+			    trans_asprite(0, item[weatab[i]], tick, &scale, &cr, &cg, &cb, &light, &sat, &c1, &c2, &c3, &shine);
+			fx.sprite = sprite;
+			fx.c1 = c1;
+			fx.c2 = c2;
+			fx.c3 = c3;
+			fx.cr = (char)cr;
+			fx.cg = (char)cg;
+			fx.cb = (char)cb;
+			fx.clight = (char)light;
+			fx.sat = (char)sat;
+			fx.shine = shine;
+			fx.scale = scale;
+			fx.sink = 0;
+			fx.align = RENDER_ALIGN_CENTER;
+			fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = i == weasel ? FX_ITEMBRIGHT : FX_ITEMLIGHT;
+
+			render_sprite_fx(&fx, x, y);
+		}
+
+		if (butsel >= BUT_WEA_BEG && butsel <= BUT_WEA_END && !vk_item && capbut == -1) {
+			render_text(x, yt, textcolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+
+		if ((cflags & IF_WNRRING) && i == 0) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNRHAND) && i == 1) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNLHAND) && i == 2 && !(cflags & IF_WNTWOHANDED)) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNTWOHANDED) && i == 2) {
+			render_text(x, yt, redcolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNLRING) && i == 3) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNNECK) && i == 4) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNHEAD) && i == 5) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNCLOAK) && i == 6) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNBODY) && i == 7) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNBELT) && i == 8) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNARMS) && i == 9) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNLEGS) && i == 10) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+		if ((cflags & IF_WNFEET) && i == 11) {
+			render_text(x, yt, whitecolor, RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, weaname[i]);
+		}
+
+		if (i == 2 && item[weatab[1]] && (item_flags[weatab[1]] & IF_WNTWOHANDED)) {
+			render_sprite(5, x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		}
+
+		if (con_cnt && con_type == 2 && itemprice[weatab[i]]) {
+			dx_drawtext_gold(x, y + 12, textcolor, (int)itemprice[weatab[i]]);
+		}
+	}
+
+}
+
+// The menu panel: gear lock, Options button and clock
+void display_menu(void)
+{
+	dx_copysprite_emerald(butx(BUT_WEA_LCK), buty(BUT_WEA_LCK), 2 - gear_lock, 2);
+	render_text(butx(BUT_WEA_LCK) + 6, buty(BUT_WEA_LCK) - 4, textcolor, RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
+	    gear_lock ? "Gear locked" : "Gear free");
+
+	display_options_button();
+	display_screen();
+}
+
+void display_look(void)
+{
+	int b;
+	unsigned int sprite;
+	unsigned short c1, c2, c3, shine;
+	unsigned char scale, cr, cg, cb, light, sat;
+	RenderFX fx;
+
+	render_sprite(opt_sprite(994), dotx(DOT_LOK), doty(DOT_LOK), RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+
+	for (b = BUT_WEA_BEG; b <= BUT_WEA_END; b++) {
+		int i = b - BUT_WEA_BEG;
+		int x = dotx(DOT_LOK) + but[b].x - dotx(DOT_WEA) + 30;
+		int y = doty(DOT_LOK) + 20;
+
+		render_sprite(opt_sprite(SPR_ITPAD), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		if (lookinv[weatab[i]]) {
+			bzero(&fx, sizeof(fx));
+
+			sprite =
+			    trans_asprite(0, lookinv[weatab[i]], tick, &scale, &cr, &cg, &cb, &light, &sat, &c1, &c2, &c3, &shine);
+			fx.sprite = sprite;
+			fx.c1 = c1;
+			fx.c2 = c2;
+			fx.c3 = c3;
+			fx.shine = shine;
+			fx.cr = (char)cr;
+			fx.cg = (char)cg;
+			fx.cb = (char)cb;
+			fx.clight = (char)light;
+			fx.sat = (char)sat;
+			fx.scale = scale;
+			fx.sink = 0;
+			fx.align = RENDER_ALIGN_CENTER;
+			fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = FX_ITEMLIGHT;
+			render_sprite_fx(&fx, x, y);
+		}
+	}
+	render_text(dotx(DOT_LOK) + 70, doty(DOT_LOK) + 50, 0xffff, RENDER_TEXT_LEFT, look_name);
+	render_text_break(dotx(DOT_LOK) + 70, doty(DOT_LOK) + 60, dotx(DOT_LOK) + 270, 0xffff, RENDER_TEXT_LEFT, look_desc);
+
+	{
+		static int look_anim = 4, look_step = 0, look_dir = 0;
+		int l_csprite, l_scale, l_cr, l_cg, l_cb, l_light, l_sat, l_c1, l_c2, l_c3, l_shine;
+
+		bzero(&fx, sizeof(fx));
+
+		l_csprite = trans_charno(
+		    (int)looksprite, &l_scale, &l_cr, &l_cg, &l_cb, &l_light, &l_sat, &l_c1, &l_c2, &l_c3, &l_shine, (int)tick);
+
+		fx.sprite = (unsigned int)get_player_sprite(l_csprite, look_dir, look_anim, look_step, 16, (int)(uint32_t)tick);
+		look_step++;
+		if (look_step == 16) {
+			look_step = 0;
+			look_anim++;
+			if (look_anim > 6) {
+				look_anim = 4;
+				look_dir += 2;
+				if (look_dir > 7) {
+					look_dir = 0;
+				}
+			}
+		}
+		fx.scale = (unsigned char)l_scale;
+		fx.shine = (unsigned short)l_shine;
+		fx.cr = (char)l_cr;
+		fx.cg = (char)l_cg;
+		fx.cb = (char)l_cb;
+		fx.clight = (char)l_light;
+		fx.sat = (char)l_sat;
+
+		if ((int)looksprite < 120 || amod_is_playersprite((int)looksprite)) {
+			fx.c1 = (unsigned short)lookc1;
+			fx.c2 = (unsigned short)lookc2;
+			fx.c3 = (unsigned short)lookc3;
+		} else {
+			fx.c1 = (unsigned short)l_c1;
+			fx.c2 = (unsigned short)l_c2;
+			fx.c3 = (unsigned short)l_c3;
+		}
+		fx.sink = 0;
+		fx.align = RENDER_ALIGN_OFFSET;
+		fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = FX_ITEMLIGHT;
+		render_sprite_fx(&fx, dotx(DOT_LOK) + 40, doty(DOT_LOK) + 110);
+	}
+}
+
+void display_inventory(void)
+{
+	int b;
+	static char *fstr[4] = {"F1", "F2", "F3", "F4"};
+	unsigned int sprite;
+	unsigned short c1, c2, c3, shine;
+	unsigned char scale, cr, cg, cb, light, sat;
+	RenderFX fx;
+
+	// fkey[0]=fkey[1]=fkey[2]=fkey[3]=0;
+
+	for (b = BUT_INV_BEG; b <= BUT_INV_END; b++) {
+		int i = 30 + invoff * INVDX + b - BUT_INV_BEG;
+		int c = (i - 2) % 4;
+		int x = butx(b);
+		int y = buty(b);
+		if ((b - BUT_INV_BEG) / INVDX >= INVDY || i >= _inventorysize) {
+			break;
+		}
+		int yt = y + 12;
+
+		render_sprite(opt_sprite(SPR_ITPAD), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		if (i == invsel) {
+			render_sprite(opt_sprite(SPR_ITSEL), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		}
+		if (item[i]) {
+			bzero(&fx, sizeof(fx));
+
+			sprite = trans_asprite(0, item[i], tick, &scale, &cr, &cg, &cb, &light, &sat, &c1, &c2, &c3, &shine);
+			fx.sprite = sprite;
+			fx.shine = shine;
+			fx.c1 = c1;
+			fx.c2 = c2;
+			fx.c3 = c3;
+			fx.cr = (char)cr;
+			fx.cg = (char)cg;
+			fx.cb = (char)cb;
+			fx.clight = (char)light;
+			fx.sat = (char)sat;
+			fx.scale = scale;
+			fx.sink = 0;
+			fx.align = RENDER_ALIGN_CENTER;
+			fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = (i == invsel) ? FX_ITEMBRIGHT : FX_ITEMLIGHT;
+			render_sprite_fx(&fx, x, y);
+			if ((sprite = (unsigned int)additional_sprite((unsigned int)item[i], (int)tick)) != 0U) {
+				fx.sprite = sprite;
+				render_sprite_fx(&fx, x, y);
+			}
+		}
+		if (fkeyitem[c] == i) {
+			render_text(x, y - 18, textcolor, RENDER_TEXT_SMALL | RENDER_ALIGN_CENTER | RENDER_TEXT_FRAMED, fstr[c]);
+		}
+		if (con_cnt && con_type == 2 && itemprice[i]) {
+			dx_drawtext_gold(x, yt, textcolor, (int)itemprice[i]);
+		}
+	}
+}
+
+void display_container(void)
+{
+	int b;
+	unsigned int sprite;
+	unsigned short c1, c2, c3, shine;
+	unsigned char scale, cr, cg, cb, light, sat;
+	RenderFX fx;
+
+	// the container name is shown in the Skills panel title (panels_display_frame)
+
+	for (b = BUT_CON_BEG; b <= BUT_CON_END; b++) {
+		int i = conoff * CONDX + b - BUT_CON_BEG;
+		int x = butx(b);
+		int y = buty(b);
+		int yt = y + 12;
+		unsigned short int color;
+
+		if ((b - BUT_CON_BEG) / CONDX >= CONDY) {
+			break;
+		}
+
+		render_sprite(opt_sprite(SPR_ITPAD), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		if (i == consel) {
+			render_sprite(opt_sprite(SPR_ITSEL), x, y, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
+		}
+		if (i >= con_cnt) {
+			continue;
+		}
+		if (container[i]) {
+			bzero(&fx, sizeof(fx));
+
+			sprite = trans_asprite(0, container[i], tick, &scale, &cr, &cg, &cb, &light, &sat, &c1, &c2, &c3, &shine);
+			fx.sprite = sprite;
+			fx.shine = shine;
+			fx.c1 = c1;
+			fx.c2 = c2;
+			fx.c3 = c3;
+			fx.cr = (char)cr;
+			fx.cg = (char)cg;
+			fx.cb = (char)cb;
+			fx.clight = (char)light;
+			fx.sat = (char)sat;
+			fx.scale = scale;
+			fx.sink = 0;
+			fx.align = RENDER_ALIGN_CENTER;
+			fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = i == consel ? FX_ITEMBRIGHT : FX_ITEMLIGHT;
+			render_sprite_fx(&fx, x, y);
+		}
+
+		if (con_type == 2 && price[i]) {
+			if (price[i] > gold && i != consel) {
+				color = darkredcolor;
+			} else if (price[i] > gold && i == consel) {
+				color = redcolor;
+			} else if (i == consel) {
+				color = whitecolor;
+			} else {
+				color = textcolor;
+			}
+
+			dx_drawtext_gold(x, yt, color, (int)price[i]);
+		}
+	}
+}
+
+void display_gold(void)
+{
+	int x, y;
+
+	x = but[BUT_GLD].x;
+	y = but[BUT_GLD].y;
+
+	if (!(game_options & GO_SMALLBOT)) {
+		render_sprite(SPR_GOLD_BEG + 7, x, y - 10,
+		    lcmd == CMD_TAKE_GOLD || lcmd == CMD_DROP_GOLD ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
+		    RENDER_ALIGN_CENTER);
+	}
+
+	if (capbut == BUT_GLD) {
+		dx_drawtext_gold(x, y - 10, textcolor, (int)takegold);
+		dx_drawtext_gold(x, y + 2, textcolor, (int)(gold - takegold));
+	} else {
+		dx_drawtext_gold(x, y + 2, textcolor, (int)gold);
+	}
+}
+
+// trashcan, in the chat panel
+void display_junk(void)
+{
+	if (vk_item || csprite) {
+		render_sprite(25, but[BUT_JNK].x, but[BUT_JNK].y, lcmd == CMD_JUNK_ITEM ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
+		    RENDER_ALIGN_CENTER);
+	}
+}
+
+void display_citem(void)
+{
+	int x, y;
+	unsigned int sprite;
+	unsigned short c1, c2, c3, shine;
+	unsigned char scale, cr, cg, cb, light, sat;
+	RenderFX fx;
+
+	// citem
+	if (!csprite) {
+		return;
+	}
+
+	if (capbut == -1) {
+		x = mousex;
+		y = mousey;
+	} else {
+		return;
+	}
+
+	if (x < 0 || y >= XRES) {
+		return;
+	}
+	if (y < 0 || y >= YRES) {
+		return;
+	}
+
+	bzero(&fx, sizeof(fx));
+
+	sprite = trans_asprite(0, csprite, tick, &scale, &cr, &cg, &cb, &light, &sat, &c1, &c2, &c3, &shine);
+	fx.sprite = sprite;
+	fx.shine = shine;
+	fx.c1 = c1;
+	fx.c2 = c2;
+	fx.c3 = c3;
+	fx.cr = (char)cr;
+	fx.cg = (char)cg;
+	fx.cb = (char)cb;
+	fx.clight = (char)light;
+	fx.sat = (char)sat;
+	fx.scale = scale;
+	fx.sink = 0;
+	fx.align = RENDER_ALIGN_CENTER;
+	fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = FX_ITEMLIGHT;
+	render_push_clip();
+	render_more_clip(0, 0, XRES, YRES);
+	render_sprite_fx(&fx, x, y);
+	if ((sprite = (unsigned int)additional_sprite((unsigned int)csprite, (int)tick)) != 0U) {
+		fx.sprite = sprite;
+		render_sprite_fx(&fx, x, y);
+	}
+
+	if (cprice) {
+		dx_drawtext_gold(x, y + 5 + 12, textcolor, (int)cprice);
+	}
+	render_pop_clip();
+}
+
+void display_scrollbars(void)
+{
+	display_scrollbars_skl();
+	display_scrollbars_inv();
+}
+
+void display_scrollbars_skl(void)
+{
+	render_sprite(SPR_SCRUP, but[BUT_SCL_UP].x, but[BUT_SCL_UP].y, butsel == BUT_SCL_UP ? FX_ITEMBRIGHT : FX_ITEMLIGHT,
+	    RENDER_ALIGN_OFFSET);
+	render_sprite(SPR_SCRLT, but[BUT_SCL_TR].x, but[BUT_SCL_TR].y, butsel == BUT_SCL_TR ? FX_ITEMBRIGHT : FX_ITEMLIGHT,
+	    RENDER_ALIGN_OFFSET);
+	render_sprite(SPR_SCRDW, but[BUT_SCL_DW].x, but[BUT_SCL_DW].y, butsel == BUT_SCL_DW ? FX_ITEMBRIGHT : FX_ITEMLIGHT,
+	    RENDER_ALIGN_OFFSET);
+}
+
+void display_scrollbars_inv(void)
+{
+	render_sprite(SPR_SCRUP, but[BUT_SCR_UP].x, but[BUT_SCR_UP].y, butsel == BUT_SCR_UP ? FX_ITEMBRIGHT : FX_ITEMLIGHT,
+	    RENDER_ALIGN_OFFSET);
+	render_sprite(SPR_SCRRT, but[BUT_SCR_TR].x, but[BUT_SCR_TR].y, butsel == BUT_SCR_TR ? FX_ITEMBRIGHT : FX_ITEMLIGHT,
+	    RENDER_ALIGN_OFFSET);
+	render_sprite(SPR_SCRDW, but[BUT_SCR_DW].x, but[BUT_SCR_DW].y, butsel == BUT_SCR_DW ? FX_ITEMBRIGHT : FX_ITEMLIGHT,
+	    RENDER_ALIGN_OFFSET);
+}
+
+void display_skill(void)
+{
+	int b;
+	char buf[256];
+	int cn = (int)map[MAPDX * MAPDY / 2].cn;
+
+	for (b = BUT_SKL_BEG; b <= BUT_SKL_END; b++) {
+		int i = skl_row(b - BUT_SKL_BEG);
+		int x = butx(b);
+		int y = buty(b);
+		int yt = y - 4;
+		int bsx = x + 10;
+		int bex = x + SKLWIDTH;
+		int bsy = y + 4;
+		int barsize;
+
+		if (y + 4 > doty(DOT_SK2) || b - BUT_SKL_BEG >= SKLDY) {
+			continue;
+		}
+
+		if (i >= skltab_cnt) {
+			continue;
+		}
+
+		if (!(but[b].flags & BUTF_NOHIT)) {
+			if (i == sklsel) {
+				dx_copysprite_emerald(x, y, 4, 2);
+			} else {
+				dx_copysprite_emerald(x, y, 4, 1);
+			}
+		} else if (skltab[i].button) {
+			dx_copysprite_emerald(x, y, 1, 0);
+		}
+
+		if (skltab[i].v == STV_EMPTYLINE) {
+			continue;
+		}
+
+		if (skltab[i].v == STV_JUSTAVALUE) {
+			render_text(bsx, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
+			render_text_fmt(bex, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, "%d", skltab[i].curr);
+			continue;
+		}
+
+		if (skltab[i].v == STV_TABS) {
+			// Skills / Effects tabs: left half and right half of the line (click either), the open one
+			// drawn as a raised tab over a line that runs under the whole panel width
+			int tx[2], tw[2], t;
+			static const char *tname[2] = {"Skills", "Effects"};
+
+			tx[0] = bsx - 6;
+			tx[1] = bsx - 6 + SKLWIDTH / 2;
+			for (t = 0; t < 2; t++) {
+				int open = (t == 0) == (skl_view == SKLVIEW_SKILLS);
+
+				tw[t] = render_text_length(RENDER_TEXT_LARGE, tname[t]);
+				if (open) {
+					render_rect(tx[t] - 3, yt - 2, tx[t] + tw[t] + 3, bsy + 3, darkgraycolor);
+				}
+				render_text(tx[t], yt, open ? lightorangecolor : graycolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, tname[t]);
+			}
+			render_rect(bsx - 9, bsy + 3, bex, bsy + 4, darkgraycolor);
+			continue;
+		}
+
+		if (skltab[i].v == STV_HEADER) {
+			render_text(bsx - 6, yt, lightorangecolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
+			continue;
+		}
+
+		if (skltab[i].v == STV_EFFECT) {
+			if (skltab[i].curr >= 0 && skltab[i].curr < effline_cnt) {
+				render_text(bsx, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
+				render_text(bex, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, effline[skltab[i].curr].value);
+			}
+			continue;
+		}
+
+		if (skltab[i].skill_id >= 0) {
+			// use-based skill: XP progress to the next level, on a dark track
+			render_rect(bsx, bsy, bex, bsy + 1, darkgraycolor);
+			if (skltab[i].barsize > 0) {
+				render_rect(bsx, bsy, bsx + skltab[i].barsize, bsy + 1, bluecolor);
+			}
+		}
+
+		if (skltab[i].v == STV_SKILL) {
+			render_text(bsx, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
+			render_text_fmt(bex, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, "%d", skltab[i].base);
+			continue;
+		}
+
+		if (skltab[i].button) {
+			barsize = skltab[i].barsize;
+		} else {
+			barsize = 0;
+		}
+		if (barsize > 0) {
+			render_rect(bsx, bsy, bsx + barsize, bsy + 1, bluecolor);
+		} else if (barsize < 0) {
+			render_rect(bsx, bsy, bex + barsize, bsy + 1, redcolor);
+		}
+
+		int done = 0;
+		if (sv_ver == 35) {
+			switch (skltab[i].v) {
+			case V35_OFFENSE:
+			case V35_DEFENSE:
+				sprintf(buf, "%d", skltab[i].curr + rage / 4);
+				done = 1;
+				break;
+
+			case V35_IMMUNITY:
+				sprintf(buf, "%2d/%2d", skltab[i].base, skltab[i].curr + rage / 4);
+				done = 1;
+				break;
+			case V35_WEAPON:
+				sprintf(buf, "%.2f", skltab[i].curr / 20.0);
+				done = 1;
+				break;
+			}
+		} else {
+			switch (skltab[i].v) {
+			case V3_WEAPON:
+				sprintf(buf, "%d", skltab[i].curr);
+				done = 1;
+				break;
+			}
+		}
+
+		if (!done) {
+			switch (v_val(skltab[i].v)) {
+			case V_SPEED:
+			case V_LIGHT:
+			case V_COLD:
+				sprintf(buf, "%d", skltab[i].curr);
+				break;
+
+			case V_ARMOR:
+				sprintf(buf, "%.2f", skltab[i].curr / 20.0);
+				break;
+			case V_MANA:
+				sprintf(buf, "%d/%2d/%2d", mana, skltab[i].base, skltab[i].curr);
+				break;
+			case V_HP:
+				if (lifeshield) {
+					sprintf(buf, "%d+%d/%2d/%2d", hp, lifeshield, skltab[i].base, skltab[i].curr);
+				} else {
+					sprintf(buf, "%d/%2d/%2d", hp, skltab[i].base, skltab[i].curr);
+				}
+				break;
+			case V_ENDURANCE:
+				sprintf(buf, "%d/%2d/%2d", endurance, skltab[i].base, skltab[i].curr);
+				break;
+			default:
+				if (!amod_display_skill_line(skltab[i].v, skltab[i].base, skltab[i].curr, cn, buf)) {
+					if (skltab[i].v >= V_PROFBASE) {
+						sprintf(buf, "%d", skltab[i].base);
+					} else {
+						sprintf(buf, "%2d/%2d", skltab[i].base, skltab[i].curr);
+					}
+				}
+				break;
+				;
+			}
+		}
+
+		render_text(bsx, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
+		render_text(bex, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, buf);
+	}
+}
+
+void display_keys(void)
+{
+	int i, x, u;
+	char buf[256];
+	unsigned short int col;
+
+	for (u = i = 0; i < max_keytab; i++) {
+		if ((keytab[i].vk_item && !vk_item) || (!keytab[i].vk_item && vk_item)) {
+			continue;
+		}
+		if ((keytab[i].vk_char && !vk_char) || (!keytab[i].vk_char && vk_char)) {
+			continue;
+		}
+		if ((keytab[i].vk_spell && !vk_spell) || (!keytab[i].vk_spell && vk_spell)) {
+			continue;
+		}
+
+		if (keytab[i].usetime > now - 300) {
+			col = bluecolor;
+		} else {
+			col = textcolor;
+		}
+
+		x = 10 + u++ * ((XRES0 - 20) / 10);
+
+		if (keytab[i].skill == -1) {
+			continue;
+		}
+		if (!value[0][keytab[i].skill]) {
+			continue;
+		}
+
+		if (keytab[i].userdef) {
+			sprintf(buf, "%c/%c %s", keytab[i].keycode, keytab[i].userdef, keytab[i].name);
+		} else {
+			sprintf(buf, "%c %s", keytab[i].keycode, keytab[i].name);
+		}
+
+		render_text(
+		    dotx(DOT_BOT) + x, doty(DOT_BOT) - PANEL_TITLE - 6, col, RENDER_TEXT_LEFT | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
+		    buf);
+	}
+}
+
+void display_tutor(void)
+{
+	int mx = dotx(DOT_TUT) + 406, my = doty(DOT_TUT) + 80;
+	char buf[80];
+
+	if (!show_tutor) {
+		return;
+	}
+
+	render_rect(dotx(DOT_TUT), doty(DOT_TUT), dotx(DOT_TUT) + 410, doty(DOT_TUT) + 90, IRGB(24, 22, 16));
+
+	render_line(dotx(DOT_TUT), doty(DOT_TUT), dotx(DOT_TUT) + 410, doty(DOT_TUT), IRGB(12, 10, 4));
+	render_line(dotx(DOT_TUT) + 410, doty(DOT_TUT), dotx(DOT_TUT) + 410, doty(DOT_TUT) + 90, IRGB(12, 10, 4));
+	render_line(dotx(DOT_TUT), doty(DOT_TUT) + 90, dotx(DOT_TUT) + 410, doty(DOT_TUT) + 90, IRGB(12, 10, 4));
+	render_line(dotx(DOT_TUT), doty(DOT_TUT), dotx(DOT_TUT), doty(DOT_TUT) + 90, IRGB(12, 10, 4));
+
+	int x = dotx(DOT_TUT) + 6;
+	int y = doty(DOT_TUT) + 4;
+	const char *ptr = tutor_text;
+	while (*ptr) {
+		while (*ptr == ' ') {
+			ptr++;
+		}
+		while (*ptr == '$') {
+			ptr++;
+			x = dotx(DOT_TUT) + 6;
+			y += 10;
+			if (y >= my) {
+				break;
+			}
+		}
+		while (*ptr == ' ') {
+			ptr++;
+		}
+		int n = 0;
+		while (*ptr && *ptr != ' ' && *ptr != '$' && n < 79) {
+			buf[n++] = *ptr++;
+		}
+		buf[n] = 0;
+		if (x + render_text_length(RENDER_TEXT_LEFT | RENDER_TEXT_LARGE, buf) >= mx) {
+			x = dotx(DOT_TUT) + 6;
+			y += 10;
+			if (y >= my) {
+				break;
+			}
+		}
+		x = render_text(x, y, IRGB(12, 10, 4), RENDER_TEXT_LEFT | RENDER_TEXT_LARGE, buf) + 3;
+	}
+}
+
+// date stuff
+#define DAYLEN  (60 * 60 * 2)
+#define HOURLEN (DAYLEN / 24)
+#define MINLEN  (HOURLEN / 60)
+
+static void trans_date(int t, int *phour, int *pmin)
+{
+	if (pmin) {
+		*pmin = (t / MINLEN) % 60;
+	}
+	if (phour) {
+		*phour = (t / HOURLEN) % 24;
+	}
+}
+
+void display_screen(void)
+{
+	int h, m;
+	int h1, h2, m1, m2;
+	static int rh1 = 0, rh2 = 0, rm1 = 0, rm2 = 0;
+
+	trans_date((int)realtime, &h, &m);
+
+	h1 = h / 10 * 3;
+	h2 = h % 10 * 3;
+	m1 = m / 10 * 3;
+	m2 = m % 10 * 3;
+
+	if (h1 != rh1) {
+		rh1++;
+	}
+	if (rh1 == 30) {
+		rh1 = 0;
+	}
+
+	if (h2 != rh2) {
+		rh2++;
+	}
+	if (rh2 == 30) {
+		rh2 = 0;
+	}
+
+	if (m1 != rm1) {
+		rm1++;
+	}
+	if (rm1 == 18) {
+		rm1 = 0;
+	}
+
+	if (m2 != rm2) {
+		rm2++;
+	}
+	if (rm2 == 30) {
+		rm2 = 0;
+	}
+
+	render_sprite((unsigned int)(200 + rh1), dotx(DOT_TOP) + 730 + 0 * 10 - 2, doty(DOT_TOP) + 5 + 3,
+	    RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+	render_sprite((unsigned int)(200 + rh2), dotx(DOT_TOP) + 730 + 1 * 10 - 2, doty(DOT_TOP) + 5 + 3,
+	    RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+	render_sprite((unsigned int)(200 + rm1), dotx(DOT_TOP) + 734 + 2 * 10 - 2, doty(DOT_TOP) + 5 + 3,
+	    RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+	render_sprite((unsigned int)(200 + rm2), dotx(DOT_TOP) + 734 + 3 * 10 - 2, doty(DOT_TOP) + 5 + 3,
+	    RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+
+	sprintf(hover_time_text, "%02d:%02d Astonia Standard Time", h, m);
+}
+
+// "jump to latest" button, bottom right of the chat text, shown while scrolled up
+static const char *chat_latest_label(char *buf, size_t size)
+{
+	int n = render_text_unseen();
+
+	if (n > 0) {
+		snprintf(buf, size, "%d new message%s - click for latest", n, n == 1 ? "" : "s");
+	} else {
+		snprintf(buf, size, "Scrolled up - click for latest");
+	}
+	return buf;
+}
+
+static void chat_latest_rect(int *sx, int *sy, int *ex, int *ey)
+{
+	char buf[80];
+
+	*ex = dotx(DOT_TXT) + __textdisplay_sx - 2;
+	*ey = doty(DOT_TXT) + __textdisplay_sy - 1;
+	*sx = *ex - render_text_len(0, chat_latest_label(buf, sizeof(buf)), -1) - 22;
+	*sy = *ey - 14;
+}
+
+// mx, my in chat panel coordinates (pnl_mx/pnl_my)
+int chat_latest_hit(int mx, int my)
+{
+	int sx, sy, ex, ey;
+
+	if (!render_text_scrolled_up()) {
+		return 0;
+	}
+	chat_latest_rect(&sx, &sy, &ex, &ey);
+	return mx >= sx && mx <= ex && my >= sy && my <= ey;
+}
+
+static void display_chat_latest(void)
+{
+	int sx, sy, ex, ey, hov, ax, ay, i;
+	char buf[80];
+	unsigned short col;
+
+	if (!render_text_scrolled_up()) {
+		return;
+	}
+	chat_latest_rect(&sx, &sy, &ex, &ey);
+	hov = chat_latest_hit(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT));
+	col = render_text_unseen() ? IRGB(31, 28, 12) : IRGB(26, 24, 20);
+
+	gui_draw_box(sx, sy, ex, ey, hov ? IRGB(16, 12, 6) : IRGB(7, 5, 3), hov ? IRGB(28, 22, 10) : IRGB(20, 16, 8));
+
+	// small down arrow
+	ax = sx + 8;
+	ay = sy + 5;
+	for (i = 0; i < 4; i++) {
+		render_line(ax - 3 + i, ay + i, ax + 4 - i, ay + i, col);
+	}
+
+	render_text(sx + 15, sy + 2, hov ? whitecolor : col, 0, chat_latest_label(buf, sizeof(buf)));
+}
+
+// chat slider, right of the chat text. Returns 0 when everything fits (no thumb).
+static int chat_slider_geom(int *sx, int *sy, int *ex, int *ey, int *ty, int *th)
+{
+	int avail, visible, pos, h;
+
+	*ex = dotx(DOT_TX2) - 2;
+	*sx = *ex - 6;
+	*sy = doty(DOT_TXT);
+	*ey = doty(DOT_TXT) + __textdisplay_sy - 2;
+	h = *ey - *sy;
+
+	render_text_scroll_info(&avail, &visible, &pos);
+	if (avail <= visible || h < 12) {
+		*ty = *sy;
+		*th = h;
+		return 0;
+	}
+	*th = h * visible / avail;
+	if (*th < 10) {
+		*th = 10;
+	}
+	*ty = *sy + (h - *th) * pos / (avail - visible);
+	return 1;
+}
+
+static int chat_slider_drag = 0, chat_slider_grab;
+
+static void chat_slider_set(int my)
+{
+	int sx, sy, ex, ey, ty, th, avail, visible, pos;
+
+	if (!chat_slider_geom(&sx, &sy, &ex, &ey, &ty, &th) || ey - sy <= th) {
+		return;
+	}
+	render_text_scroll_info(&avail, &visible, &pos);
+	pos = ((my - chat_slider_grab - sy) * (avail - visible) + (ey - sy - th) / 2) / (ey - sy - th);
+	render_text_scroll_to(pos);
+}
+
+// Click and drag the chat slider; click above or below the thumb to jump there.
+// Returns 1 when it took the mouse event.
+int chat_slider_mouse(int what)
+{
+	int mx = pnl_lx(PNL_CHAT, mousex), my = pnl_ly(PNL_CHAT, mousey);
+	int sx, sy, ex, ey, ty, th;
+
+	switch (what) {
+	case SDL_MOUM_NONE:
+		if (chat_slider_drag) {
+			chat_slider_set(my);
+			return 1;
+		}
+		return 0;
+	case SDL_MOUM_LDOWN:
+		if (pnl_at(mousex, mousey) != PNL_CHAT) {
+			return 0;
+		}
+		if (!chat_slider_geom(&sx, &sy, &ex, &ey, &ty, &th)) {
+			return 0;
+		}
+		if (mx < sx - 2 || mx > ex + 2 || my < sy || my > ey) {
+			return 0;
+		}
+		chat_slider_grab = (my >= ty && my <= ty + th) ? my - ty : th / 2;
+		chat_slider_drag = 1;
+		chat_slider_set(my);
+		return 1;
+	case SDL_MOUM_LUP:
+		if (chat_slider_drag) {
+			chat_slider_drag = 0;
+			return 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+static void display_chat_slider(void)
+{
+	int sx, sy, ex, ey, ty, th, hov, mx = pnl_mx(PNL_CHAT), my = pnl_my(PNL_CHAT);
+
+	if (!chat_slider_geom(&sx, &sy, &ex, &ey, &ty, &th)) {
+		gui_draw_box(sx, sy, ex, ey, IRGB(4, 3, 2), IRGB(10, 8, 5));
+		return;
+	}
+	hov = chat_slider_drag || (mx >= sx - 2 && mx <= ex + 2 && my >= ty && my <= ty + th);
+
+	gui_draw_box(sx, sy, ex, ey, IRGB(4, 3, 2), IRGB(12, 10, 6));
+	gui_draw_box(sx + 1, ty, ex - 1, ty + th, hov ? IRGB(26, 20, 10) : IRGB(18, 14, 8), IRGB(8, 6, 3));
+}
+
+void display_text(void)
+{
+	int link;
+
+	render_display_text();
+	display_chat_slider();
+	display_chat_latest();
+
+	if ((link = render_scantext(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT), hitsel))) {
+		hittype = link;
+	} else {
+		hitsel[0] = 0;
+	}
+
+	display_cmd();
+}
+
+void display_mode(void)
+{
+	static char *speedtext[3] = {"NORMAL", "FAST", "STEALTH"};
+	int sel;
+	unsigned short int col;
+
+	// walk
+	if (butsel >= BUT_MOD_WALK0 && butsel <= BUT_MOD_WALK2) {
+		sel = butsel - BUT_MOD_WALK0;
+		col = sel == pspeed ? lightbluecolor : bluecolor;
+	} else {
+		sel = pspeed;
+		col = lightbluecolor;
+	}
+
+	dx_copysprite_emerald(but[BUT_MOD_WALK0].x, but[BUT_MOD_WALK0].y, 4, sel == 0 ? 2 : pspeed == 0 ? 1 : 0);
+	dx_copysprite_emerald(but[BUT_MOD_WALK1].x, but[BUT_MOD_WALK1].y, 4, sel == 1 ? 2 : pspeed == 1 ? 1 : 0);
+	dx_copysprite_emerald(but[BUT_MOD_WALK2].x, but[BUT_MOD_WALK2].y, 4, sel == 2 ? 2 : pspeed == 2 ? 1 : 0);
+
+	render_text(but[BUT_MOD_WALK0].x, but[BUT_MOD_WALK0].y + 7, bluecolor,
+	    RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "F6");
+	render_text(but[BUT_MOD_WALK1].x, but[BUT_MOD_WALK1].y + 7, bluecolor,
+	    RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "F5");
+	render_text(but[BUT_MOD_WALK2].x, but[BUT_MOD_WALK2].y + 7, bluecolor,
+	    RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "F7");
+
+	if (*speedtext[sel]) {
+		render_text(but[BUT_MOD_WALK0].x, but[BUT_MOD_WALK0].y - 13, col,
+		    RENDER_TEXT_SMALL | RENDER_ALIGN_CENTER | RENDER_TEXT_FRAMED, speedtext[sel]);
+	}
+}
+
+void display_selfspells(void)
+{
+	int cn = (int)map[mapmn(MAPDX / 2, MAPDY / 2)].cn;
+	if (!cn) {
+		return;
+	}
+
+	sprintf(hover_bless_text, "Bless: Not active");
+	sprintf(hover_freeze_text, "Freeze: Not active");
+	sprintf(hover_heal_text, "Heal: Not active");
+	sprintf(hover_potion_text, "Potion: Not active");
+
+	for (int n = 0; n < 4; n++) {
+		int nr = find_cn_ceffect(cn, n);
+		if (nr == -1) {
+			continue;
+		}
+
+		switch (ceffect[nr].generic.type) {
+		case 9: {
+			int step = 50 - 50 * (int)(ceffect[nr].bless.stop - tick) /
+			                    (int)(ceffect[nr].bless.stop - ceffect[nr].bless.start);
+			render_push_clip();
+			render_more_clip(0, 0, XRES, doty(DOT_SSP) + 119 - 68);
+			if (ceffect[nr].bless.stop - tick < 24 * 30 && (tick & 4)) {
+				render_sprite(997, dotx(DOT_SSP) + 2 * 10, doty(DOT_SSP) + step, RENDERFX_BRIGHT, RENDER_ALIGN_NORMAL);
+			} else {
+				render_sprite(
+				    997, dotx(DOT_SSP) + 2 * 10, doty(DOT_SSP) + step, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+			}
+			render_pop_clip();
+			sprintf(hover_bless_text, "Bless: %us to go", (ceffect[nr].bless.stop - tick) / 24);
+			break;
+		}
+		case 10:
+#define HEALDURATION (TICKS * 8)
+			if (sv_ver == 35) {
+				int step = 50 * (tick - ceffect[nr].heal.start) / HEALDURATION;
+				render_push_clip();
+				render_more_clip(0, 0, XRES, doty(DOT_SSP) + 119 - 68);
+				render_sprite(
+				    997, dotx(DOT_SSP) + 1 * 10, doty(DOT_SSP) + step, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+				render_pop_clip();
+				sprintf(hover_heal_text, "Heal: %.1fs to go", (ceffect[nr].heal.start + HEALDURATION - tick) / 24.0);
+			}
+			break;
+
+		case 11:
+			if (sv_ver == 30) {
+				int step = 50 - 50 * (int)(ceffect[nr].freeze.stop - tick) /
+				                    (int)(ceffect[nr].freeze.stop - ceffect[nr].freeze.start);
+				render_push_clip();
+				render_more_clip(0, 0, XRES, doty(DOT_SSP) + 119 - 68);
+				render_sprite(
+				    997, dotx(DOT_SSP) + 1 * 10, doty(DOT_SSP) + step, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+				render_pop_clip();
+				sprintf(hover_freeze_text, "Freeze: %us to go", (ceffect[nr].freeze.stop - tick) / 24);
+			}
+			break;
+		case 14: {
+			int step = 50 - 50 * (int)(ceffect[nr].potion.stop - tick) /
+			                    (int)(ceffect[nr].potion.stop - ceffect[nr].potion.start);
+			render_push_clip();
+			render_more_clip(0, 0, XRES, doty(DOT_SSP) + 119 - 68);
+			if (step >= 40 && (tick & 4)) {
+				render_sprite(997, dotx(DOT_SSP) + 0 * 10, doty(DOT_SSP) + step, RENDERFX_BRIGHT, RENDER_ALIGN_NORMAL);
+			} else {
+				render_sprite(
+				    997, dotx(DOT_SSP) + 0 * 10, doty(DOT_SSP) + step, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+			}
+			render_pop_clip();
+			sprintf(hover_potion_text, "Potion: %us to go", (ceffect[nr].potion.stop - tick) / 24);
+			break;
+		}
+		}
+	}
+}
+
+void display_exp(void)
+{
+	static int last_exp = 0, exp_ticker = 0;
+
+	sprintf(hover_level_text, "Level: unknown");
+
+	int cn = (int)map[MAPDX * MAPDY / 2].cn;
+	int level = player[cn].level;
+
+	int expe = (int)experience;
+	int clevel = exp2level(expe);
+	int nlevel = level + 1;
+
+	int step = level2exp(nlevel) - expe;
+	int total = level2exp(nlevel) - level2exp(clevel);
+	if (step > total) {
+		step = total; // ugh. fix for level 1 with 0 exp
+	}
+
+	if (total) {
+		if (last_exp != expe) {
+			exp_ticker = 3;
+			last_exp = expe;
+		}
+
+		render_push_clip();
+		render_more_clip(0, 0, dots_level_x() + 31 + 100 - (int)(100ll * step / total), dots_level_y() + 8 + 7);
+		render_sprite(996, dots_level_x() + 31, dots_level_y() + 7, exp_ticker ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
+		    RENDER_ALIGN_NORMAL);
+		render_pop_clip();
+
+		if (exp_ticker) {
+			exp_ticker--;
+		}
+
+		sprintf(hover_level_text, "Level: From %d to %d", clevel, nlevel);
+	}
+}
+
+char *_game_rankname[] = {
+    "nobody", // 0
+    "Private", // 1
+    "Private First Class", // 2
+    "Lance Corporal", // 3
+    "Corporal", // 4
+    "Sergeant", // 5     lvl 30
+    "Staff Sergeant", // 6
+    "Master Sergeant", // 7
+    "First Sergeant", // 8     lvl 45
+    "Sergeant Major", // 9
+    "Second Lieutenant", // 10    lvl 55
+    "First Lieutenant", // 11
+    "Captain", // 12
+    "Major", // 13
+    "Lieutenant Colonel", // 14
+    "Colonel", // 15
+    "Brigadier General", // 16
+    "Major General", // 17
+    "Lieutenant General", // 18
+    "General", // 19
+    "Field Marshal", // 20    lvl 105
+    "Knight of Astonia", // 21
+    "Baron of Astonia", // 22
+    "Earl of Astonia", // 23
+    "Warlord of Astonia" // 24    lvl 125
+};
+char **game_rankname = _game_rankname;
+
+int _game_rankcount = ARRAYSIZE(_game_rankname);
+int *game_rankcount = &_game_rankcount;
+
+DLL_EXPORT int mil_rank(int exp);
+
+DLL_EXPORT int mil_rank(int exp)
+{
+	int n;
+
+	for (n = 1; n < 50; n++) {
+		if (exp < n * n * n) {
+			return n - 1;
+		}
+	}
+	return 99;
+}
+
+void display_military(void)
+{
+	int step, total, rank, cost1, cost2;
+
+	sprintf(hover_rank_text, "Rank: none or unknown");
+
+	rank = mil_rank((int)mil_exp);
+	cost1 = rank * rank * rank;
+	cost2 = (rank + 1) * (rank + 1) * (rank + 1);
+
+	total = cost2 - cost1;
+	step = (int)mil_exp - cost1;
+	if (step > total) {
+		step = total;
+	}
+
+	if (mil_exp && total) {
+		if (rank < *game_rankcount - 1) {
+			render_push_clip();
+			render_more_clip(0, 0, dots_level_x() + 31 + 100 * step / total, dots_level_y() + 8 + 24);
+			render_sprite(993, dots_level_x() + 31, dots_level_y() + 24, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+			render_pop_clip();
+
+			sprintf(hover_rank_text, "Rank: '%s' to '%s'", game_rankname[rank], game_rankname[rank + 1]);
+		} else {
+			sprintf(hover_rank_text, "%s", game_rankname[*game_rankcount - 1]);
+		}
+	}
+}
+
+void display_rage(void)
+{
+	int step;
+
+	sprintf(hover_rage_text, "Rage: Not active");
+
+	if (!value[0][sv_val(V_RAGE)] || !rage) {
+		return;
+	}
+
+	if (sv_ver == 35) {
+		step = 50 - 50 * rage / (value[0][V35_RAGE] + (int)(value[0][V35_TACTICS] * 0.15 + 0.1));
+	} else {
+		step = (int)(50 - 50 * rage / value[0][V3_RAGE]);
+	}
+	render_push_clip();
+	render_more_clip(0, 0, XRES, doty(DOT_SSP) + 119 - 68);
+	render_sprite(997, dotx(DOT_SSP) + 3 * 10, doty(DOT_SSP) + step, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+	render_pop_clip();
+
+	if (sv_ver == 35) {
+		sprintf(hover_rage_text, "Rage: +%d", rage / 4);
+	} else {
+		sprintf(hover_rage_text, "Rage: %d%%", 100 * rage / value[0][V3_RAGE]);
+	}
+}
+
+void display_game_special(void)
+{
+	int dx, ox = render_offset_x(), oy = render_offset_y();
+
+	if (!display_gfx) {
+		return;
+	}
+
+	// the arrows use positions in the 800 pixel GUI column
+	render_set_offset(ox + gui_dx, oy);
+
+	switch (display_gfx) {
+	// TODO: these are the ugly tutorial arrows
+	// since we want to re-write the input parts of the
+	// GUI there's no point in updating them now
+	// so: Make a new tutorial. Eventually.
+	case 1:
+		render_sprite(50473, 343, 540, 14, 0);
+		break;
+	case 2:
+		render_sprite(50473, 423, 167, 14, 0);
+		break;
+	case 3:
+		dx = (tick - display_time) * 450 / 120;
+		if (dx < 450) {
+			render_sprite(50475, 175 + dx, 60, 14, 0);
+		}
+		break;
+	case 4:
+		render_sprite(50475, 218, 60, 14, 0);
+		break;
+	case 5:
+		render_sprite(50475, 257, 60, 14, 0);
+		break;
+	case 6:
+		render_sprite(50475, 23, 45, 14, 0);
+		break;
+	case 7:
+		render_sprite(50475, 75, 47, 14, 0);
+		break;
+	case 8:
+		render_sprite(50475, 763, 62, 14, 0);
+		break;
+
+	case 9:
+		dx = (tick - display_time) * 150 / 120;
+		if (dx < 150) {
+			render_sprite(50474, 188, 447 + dx, 14, 0);
+		}
+		break;
+
+	case 10:
+		render_sprite(50474, 205, 459, 14, 0);
+		break;
+
+	case 11:
+		dx = (tick - display_time) * 150 / 120;
+		if (dx < 150) {
+			render_sprite(50476, 200, 440 + dx, 14, 0);
+		}
+		break;
+
+	case 12:
+		dx = (tick - display_time) * 150 / 120;
+		if (dx < 150) {
+			render_sprite(50476, 618, 445 + dx, 14, 0);
+		}
+		break;
+
+	case 13:
+		render_sprite(50476, 625, 456, 14, 0);
+		break;
+	case 14:
+		render_sprite(50476, 700, 456, 14, 0);
+		break;
+	case 15:
+		render_sprite(50476, 741, 456, 14, 0);
+		break;
+
+	case 16:
+		render_sprite(50476, 353, 203, 14, 0);
+		break;
+
+	case 17:
+		render_sprite(50473, 722, 382, 14, 0);
+		render_sprite(50475, 257, 60, 14, 0);
+		break;
+
+	// TODO: this is used to display the maps in earth underground
+	// needs testing.
+	default:
+		render_sprite(display_gfx, 550, 210, 14, 0);
+		break;
+	}
+
+	render_set_offset(ox, oy);
+}
+
+int action_enabled = 1;
+
+char v3_action_row[2][MAXACTIONSLOT] = {
+    //  0   1   2   3   4   5   6   7   8   9   0   1   2   3
+    {'a', 's', 'd', ' ', ' ', ' ', 'f', 'g', ' ', ' ', ' ', 'h', ' ', 'l'},
+    {' ', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', ' ', 'm', ' '}};
+
+static char *v3_action_text[MAXACTIONSLOT] = {"Attack", "Fireball", "Lightning Ball", "Flash", "Freeze", "Magic Shield",
+    "Bless", "Heal", "Warcry", "Pulse", "Firering", "Take/Use/Give/Drop", "Map", "Look"};
+
+static char *v3_action_desc[MAXACTIONSLOT] = {"Attacks another character using your equipped weapon, or your hands.",
+    "Throws a fireball. Explodes for huge splash damage when it hits.",
+    "Throws a slow moving ball of lightning. It will deal medium damage over time to enemies it passes.",
+    "Summons a small ball of lightning to your side. It will deal medium damage over time to enemies near you.",
+    "Slows down enemies close to you.",
+    "Summons a magic shield that will protect you from damage. Collapses when used up.",
+    "Increases the basic attributes (WIS/INT/AGI/STR) of the target.", "Restores some of the target's hitpoints.",
+    "Gives you a temporary Life Shield, blocking some damage. Slows enemies and might interrupt spellcasting in a "
+    "fairly wide radius around you.",
+    "Deals some damage to adjacent enemies. If an enemy is killed you will receive a small amount of their life force "
+    "as mana.",
+    "Deals high damage to adjacent enemies.",
+    "Interact with items. Can be used to take or use an item on the ground, or to drop or give an item on your mouse "
+    "cursor.",
+    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).", "Look at characters or items in the world."};
+
+static int v3_action_skill[MAXACTIONSLOT] = {V3_PERCEPT, V3_FIREBALL, V3_FLASH, V3_FLASH, V3_FREEZE, V3_MAGICSHIELD,
+    V3_BLESS, V3_HEAL, V3_WARCRY, V3_PULSE, V3_FIREBALL, V3_PERCEPT, -1, -1};
+
+char v35_action_row[2][MAXACTIONSLOT] = {{'a', 's', 'd', ' ', ' ', ' ', ' ', 'b', ' ', ' ', ' ', 'g', ' ', 'l'},
+    {' ', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', ' ', 'm', ' '}};
+
+static char *v35_action_text[MAXACTIONSLOT] = {"Attack", "Fireball", "Lightning Ball", "Flash", "Freeze",
+    "Magic Shield", "Bless", "Heal", "Warcry", "NOOP", "Firering", "Take/Use/Give/Drop", "Map", "Look"};
+
+static char *v35_action_desc[MAXACTIONSLOT] = {"Attacks another character using your equipped weapon, or your hands.",
+    "Throws a fireball. Explodes for huge splash damage when it hits.",
+    "Throws a slow moving ball of lightning. It will deal medium damage over time to enemies it passes.",
+    "Summons a small ball of lightning to your side. It will deal medium damage over time to enemies near you.",
+    "Slows down enemies close to you.",
+    "Summons a magic shield that will protect you from damage. Collapses when used up.",
+    "Increases the basic attributes (WIS/INT/AGI/STR) of yourself.", "Restores some of the target's hitpoints.",
+    "Gives you a temporary Life Shield, blocking some damage. Slows enemies and might interrupt spellcasting in a "
+    "fairly wide radius around you.",
+    "NOOP", "Deals high damage to adjacent enemies.",
+    "Interact with items. Can be used to take or use an item on the ground, or to drop or give an item on your mouse "
+    "cursor.",
+    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).", "Look at characters or items in the world."};
+
+static int v35_action_skill[MAXACTIONSLOT] = {V35_PERCEPT, V35_FIRE, V35_FLASH, V35_FLASH, V35_FREEZE, V35_MAGICSHIELD,
+    V35_BLESS, V35_HEAL, V35_WARCRY, -2, V35_FIRE, V35_PERCEPT, -1, -1};
+
+char (*action_row)[MAXACTIONSLOT] = v3_action_row;
+static char **action_text = v3_action_text;
+static char **action_desc = v3_action_desc;
+static int *action_skill = v3_action_skill;
+
+void set_v35_actions(void)
+{
+	action_row = v35_action_row;
+	action_text = v35_action_text;
+	action_desc = v35_action_desc;
+	action_skill = v35_action_skill;
+}
+
+void actions_loaded(void)
+{
+	int i;
+
+	for (i = 0; i < MAXACTIONSLOT; i++) {
+		if (action_row[0][i] < 'a' || action_row[0][i] > 'z') {
+			action_row[0][i] = '-';
+		}
+		if (action_row[1][i] < 'a' || action_row[1][i] > 'z') {
+			action_row[1][i] = '-';
+		}
+	}
+
+	action_row[0][ACTION_FLASH] = ' ';
+	action_row[0][ACTION_FREEZE] = ' ';
+	action_row[0][ACTION_SHIELD] = ' ';
+	if (sv_ver == 35) {
+		action_row[0][ACTION_BLESS] = ' ';
+	}
+	action_row[0][ACTION_WARCRY] = ' ';
+	action_row[0][ACTION_PULSE] = ' ';
+	action_row[0][ACTION_FIRERING] = ' ';
+	action_row[0][ACTION_MAP] = ' ';
+
+	action_row[1][ACTION_ATTACK] = ' ';
+	action_row[1][ACTION_TAKEGIVE] = ' ';
+	action_row[1][ACTION_LOOK] = ' ';
+}
+
+int16_t has_action_skill(int i)
+{
+	if (action_skill[i] == -1) {
+		return 1;
+	}
+	if (action_skill[i] == -2) {
+		return 0;
+	}
+	return value[0][action_skill[i]];
+}
+
+int action_key2slot(SDL_Keycode key)
+{
+	int i;
+
+	for (i = 0; i < MAXACTIONSLOT; i++) {
+		if (!has_action_skill(i)) {
+			continue;
+		}
+		if ((SDL_Keycode)action_row[0][i] == key) {
+			return i;
+		}
+		if ((SDL_Keycode)action_row[1][i] == key) {
+			return i + 100;
+		}
+	}
+	return -1;
+}
+
+SDL_Keycode action_slot2key(int slot)
+{
+	if (slot > 100) {
+		slot -= 100;
+		if (slot < 0 || slot >= MAXACTIONSLOT) {
+			return SDLK_UNKNOWN;
+		}
+		return (SDL_Keycode)action_row[1][slot];
+	}
+	if (slot < 0 || slot >= MAXACTIONSLOT) {
+		return SDLK_UNKNOWN;
+	}
+	return (SDL_Keycode)action_row[0][slot];
+}
+
+int act_lck = 1;
+
+static int get_action_key_row(int slot)
+{
+	if (action_row[0][slot] == ' ') {
+		return 1;
+	} else if (action_row[1][slot] == ' ') {
+		return 0;
+	} else if (actsel >= 0 && actsel < MAXACTIONSLOT && butx(BUT_ACT_BEG + actsel) < mousex) {
+		return 1;
+	}
+
+	return 0;
+}
+
+void action_set_key(int slot, SDL_Keycode key)
+{
+	int row, i;
+
+	if (slot < 0 || slot >= MAXACTIONSLOT) {
+		return;
+	}
+	if (key < 'a' || key > 'z') {
+		return;
+	}
+
+	row = get_action_key_row(slot);
+
+	if (action_row[row][slot] == ' ') {
+		return;
+	}
+
+	for (i = 0; i < MAXACTIONSLOT * 2; i++) {
+		if ((SDL_Keycode) * (action_row[0] + i) == key) {
+			*(action_row[0] + i) = '-';
+		}
+	}
+
+	action_row[row][slot] = (char)key;
+
+	save_options();
+}
+
+static char *unlocked_desc = "Move the mouse over one of the other icons and press the key you want to assign to it.";
+static char *locked_desc = "Change the keys assigned to the icons.";
+
+void display_action(void)
+{
+	static uint32_t hoover_start = 0, hoover_start2 = 0;
+	static int hoover_sel = 0;
+	char buf[4];
+	RenderFX fx;
+
+	if (!context_key_enabled()) {
+		hoover_sel = 0;
+		return;
+	}
+	if (vk_control || vk_alt) {
+		hoover_sel = 0;
+		return;
+	}
+
+	if (hoover_sel != actsel) {
+		hoover_sel = actsel;
+		hoover_start = tick + HOVER_DELAY;
+	}
+
+	bzero(&fx, sizeof(fx));
+	fx.scale = 80;
+	fx.sat = 14;
+	if (context_action_enabled()) {
+		for (int i = 0; i < MAXACTIONSLOT; i++) {
+			if (!has_action_skill(i)) {
+				continue;
+			}
+			fx.sprite = (unsigned int)(800 + i);
+			fx.ml = fx.ll = fx.rl = fx.ul = fx.dl =
+			    (i == actsel || i == action_ovr) ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT;
+			render_sprite_fx(&fx, butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i));
+			if (i == actsel) {
+				if (act_lck) { // non-keybinding mode
+					if (hoover_start > tick) { // display just the name first
+						render_text(butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i) - 30, IRGB(31, 31, 31),
+						    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, action_text[i]);
+					} else { // display name and desc after hovering for a short while
+						int y = 40 + render_text_break_length(0, 0, 120, IRGB(31, 31, 31), 0, action_desc[i]);
+						render_shaded_rect(butx(BUT_ACT_BEG + i) - 64, buty(BUT_ACT_BEG + i) - y - 4,
+						    butx(BUT_ACT_BEG + i) + 64, buty(BUT_ACT_BEG + i) - 15, 0, 130);
+						render_text(butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i) - y, IRGB(31, 31, 31),
+						    RENDER_TEXT_BIG | RENDER_ALIGN_CENTER, action_text[i]);
+						render_text_break(butx(BUT_ACT_BEG + i) - 60, buty(BUT_ACT_BEG + i) - y + 15,
+						    butx(BUT_ACT_BEG + i) + 60, IRGB(31, 31, 31), 0, action_desc[i]);
+					}
+					// display key-bindings
+					if (action_row[0][i] > ' ') {
+						buf[0] = (char)action_slot2key(i);
+						buf[1] = 0;
+						render_text(butx(BUT_ACT_BEG + i) - 8, buty(BUT_ACT_BEG + i) - 11, IRGB(31, 31, 31),
+						    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, buf);
+					}
+					if (action_row[1][i] > ' ') {
+						buf[0] = (char)action_slot2key(i + 100);
+						buf[1] = 0;
+						render_text(butx(BUT_ACT_BEG + i) + 8, buty(BUT_ACT_BEG + i) - 11, IRGB(31, 31, 31),
+						    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, buf);
+					}
+				} else { // keybinding mode
+					int row = get_action_key_row(i);
+					// display key-bindings
+					if (row == 0 && action_row[0][i] > ' ') {
+						buf[0] = (char)action_slot2key(i);
+						buf[1] = 0;
+						render_text(butx(BUT_ACT_BEG + i) - 8, buty(BUT_ACT_BEG + i) - 11, IRGB(31, 31, 31),
+						    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, buf);
+					}
+					if (row == 1 && action_row[1][i] > ' ') {
+						buf[0] = (char)action_slot2key(i + 100);
+						buf[1] = 0;
+						render_text(butx(BUT_ACT_BEG + i) + 8, buty(BUT_ACT_BEG + i) - 11, IRGB(31, 31, 31),
+						    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, buf);
+					}
+					int y = 30;
+					if (action_row[0][i] > ' ' && action_row[1][i] > ' ') {
+						if (row == 0) {
+							render_text(butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i) - y, IRGB(31, 31, 31),
+							    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "(Aimed at character version)");
+						} else if (action_skill[i] == sv_val(V_BLESS) || action_skill[i] == sv_val(V_HEAL)) {
+							render_text(butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i) - y, IRGB(31, 31, 31),
+							    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "(Aimed at self version)");
+						} else {
+							render_text(butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i) - y, IRGB(31, 31, 31),
+							    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "(Aimed at map tile version)");
+						}
+						y += 10;
+					}
+					render_text_fmt(butx(BUT_ACT_BEG + i), buty(BUT_ACT_BEG + i) - y, IRGB(31, 31, 31),
+					    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "Press key to assign to %s", action_text[i]);
+				}
+			}
+		}
+
+		fx.sprite = 853;
+		fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = butsel == BUT_ACT_OPN ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT;
+		render_sprite_fx(&fx, butx(BUT_ACT_OPN), buty(BUT_ACT_OPN));
+		if (butsel == BUT_ACT_OPN) {
+			render_text(butx(BUT_ACT_OPN) - 8, buty(BUT_ACT_OPN) - 11, IRGB(31, 31, 31),
+			    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "-");
+			render_text(butx(BUT_ACT_OPN) + 8, buty(BUT_ACT_OPN) - 11, IRGB(31, 31, 31),
+			    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "=");
+			render_text(butx(BUT_ACT_OPN), buty(BUT_ACT_OPN) - 30, IRGB(31, 31, 31),
+			    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, "Hide/Show");
+		}
+
+		fx.sprite = (unsigned int)(851 - act_lck);
+		fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = butsel == BUT_ACT_LCK ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT;
+		render_sprite_fx(&fx, butx(BUT_ACT_LCK), buty(BUT_ACT_LCK));
+		if (butsel == BUT_ACT_LCK) {
+			if (hoover_start2 > tick) { // display just the name first
+				render_text(butx(BUT_ACT_LCK), buty(BUT_ACT_LCK) - 30, IRGB(31, 31, 31),
+				    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER, act_lck ? "Assign Keys" : "Lock Keys");
+			} else { // display name and desc after hovering for a short while
+				int y = 40 +
+				        render_text_break_length(0, 0, 120, IRGB(31, 31, 31), 0, act_lck ? locked_desc : unlocked_desc);
+				render_shaded_rect(butx(BUT_ACT_LCK) - 64, buty(BUT_ACT_LCK) - y - 4, butx(BUT_ACT_LCK) + 64,
+				    buty(BUT_ACT_LCK) - 15, 0, 130);
+				render_text(butx(BUT_ACT_LCK), buty(BUT_ACT_LCK) - y, IRGB(31, 31, 31),
+				    RENDER_TEXT_FRAMED | RENDER_ALIGN_CENTER | RENDER_TEXT_BIG, act_lck ? "Assign Keys" : "Lock Keys");
+				render_text_break(butx(BUT_ACT_LCK) - 60, buty(BUT_ACT_LCK) - y + 15, butx(BUT_ACT_LCK) + 60,
+				    IRGB(31, 31, 31), 0, act_lck ? locked_desc : unlocked_desc);
+			}
+		} else {
+			hoover_start2 = tick + HOVER_DELAY;
+		}
+	} else {
+		fx.sprite = 852;
+		fx.ml = fx.ll = fx.rl = fx.ul = fx.dl = butsel == BUT_ACT_OPN ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT;
+		render_sprite_fx(&fx, butx(BUT_ACT_OPN), buty(BUT_ACT_OPN));
+	}
+}
+
+void display_action_lock(void)
+{
+	act_lck ^= 1;
+}
+
+void display_action_open(void)
+{
+	action_enabled ^= 1;
+	save_options();
+}
+
+static void display_bar(int sx, int sy, int perc, unsigned short color, int xs, int ys)
+{
+	perc = perc * ys / 100;
+	render_shaded_rect(sx - 1, sy - 1, sx + xs + 1, sy + ys + 1, 0, 120);
+	if (perc < 100) {
+		render_shaded_rect(sx, sy, sx + xs, sy + ys - perc, IRGB(0, 0, 0), 95);
+	}
+	if (perc > 0) {
+		render_shaded_rect(sx, sy + ys - perc, sx + xs, sy + ys, color, 95);
+	}
+}
+
+#define WARCRYCOST (12)
+
+static int warcryperccost(void)
+{
+	if (sv_ver == 35) {
+		return 100 * WARCRYCOST / value[0][sv_val(V_ENDURANCE)];
+	}
+
+	if (value[0][sv_val(V_ENDURANCE)]) {
+		return 100 * value[0][sv_val(V_WARCRY)] / value[0][sv_val(V_ENDURANCE)] / 3 + 1;
+	} else {
+		return 911;
+	}
+}
+
+void display_selfbars(void)
+{
+	int lifep, shieldp, endup, manap;
+	if (plrmn == -1) {
+		return;
+	}
+	int x, y;
+	int xs = 7, ys = 67, xd = 3;
+
+	if (!(game_options & GO_BIGBAR)) {
+		return;
+	}
+
+	x = dotx(DOT_MTL) + 7;
+	y = doty(DOT_MTL) + 7;
+
+	lifep = map[plrmn].health;
+	shieldp = map[plrmn].shield;
+	manap = map[plrmn].mana;
+	if (value[0][sv_val(V_ENDURANCE)]) {
+		endup = (int)(100 * endurance / value[0][sv_val(V_ENDURANCE)]);
+	} else {
+		endup = 100;
+	}
+
+	lifep = min(110, lifep);
+	shieldp = min(110, shieldp);
+	manap = min(110, manap);
+	endup = min(110, endup);
+
+	display_bar(x, y, lifep, healthcolor, xs, ys);
+	display_bar(x + xs + xd, y, shieldp, shieldcolor, xs, ys);
+	if (!value[0][sv_val(V_MANA)]) {
+		display_bar(x + xs * 2 + xd * 2, y, endup, endurancecolor, xs, ys);
+		if (value[0][sv_val(V_WARCRY)]) {
+			int wpc = warcryperccost();
+			for (int i = wpc; i < 100; i += wpc) {
+				int j;
+				j = i * ys / 100;
+				if (i < endup) {
+					render_line(x + xs * 2 + xd * 2, y + ys - j, x + xs * 3 + xd * 2, y + ys - j, 0x0000);
+				} else {
+					render_line(x + xs * 2 + xd * 2, y + ys - j, x + xs * 3 + xd * 2, y + ys - j, 0xffff);
+				}
+			}
+		}
+	} else {
+		display_bar(x + xs * 2 + xd * 2, y, manap, manacolor, xs, ys);
+	}
+}

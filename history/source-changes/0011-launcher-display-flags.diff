@@ -1,0 +1,95 @@
+diff --git a/src/game/main.c b/src/game/main.c
+index d6a1ac4..a6c5c9c 100644
+--- a/src/game/main.c
++++ b/src/game/main.c
+@@ -267,12 +267,15 @@ void display_usage(void)
+ 	const char *help =
+ 	    "The Astonia Client can only be started from the command line or with a specially created shortcut.\n\n"
+ 	    "Usage: moac -u playername -p password [-d url] [-v version]\n ... [-w width] [-h height]\n"
+-	    " ... [-m threads] [-o options]\n ... [-k framespersecond]\n\n"
++	    " ... [-m threads] [-o options]\n ... [-k framespersecond] [-s displaymode] [-n monitor]\n\n"
+ 	    "url being, for example, \"server.astonia.com\" or \"192.168.77.132\" (without the quotes). "
+ 	    "Default: " DEFAULT_SERVER ".\n\n"
+ 	    "version is the server version, 30 or 35. Default: 35.\n\n"
+ 	    "width and height are the desired window size. If this matches the desktop size the client "
+ 	    "will start in windowed borderless pseudo-fullscreen mode.\n\n"
++	    "displaymode is 0 for a window, 1 for windowed fullscreen, 2 for fullscreen. -w, -h and -s "
++	    "override the display settings chosen in the in-game Options window.\n\n"
++	    "monitor is the number of the monitor to start on (0 is the first).\n\n"
+ 	    "threads is the number of background threads the game should use. Use 0 to disable. Default is 4.\n\n"
+ 	    "options is a bitfield.\nBit 0 (value of 1) enables the Dark GUI by Tegra.\n"
+ 	    "Bit 1 enables the context menu.\nBit 2 the new keybindings.\nBit 3 the smaller bottom GUI.\n"
+@@ -287,6 +290,7 @@ void display_usage(void)
+ 	    "Bit 16 makes the sliding top bar less sensitive.\n"
+ 	    "Bit 17 reduces lighting effects (more performance, less pretty).\n"
+ 	    "Bit 18 disables the minimap.\n"
++	    "Bit 19 lets the mouse wheel change the movement speed.\nBit 20 smooths camera movement.\n"
+ 	    "Default depends on screen height.\n\n"
+ 	    "framespersecond will set the display rate in frames per second.\n\n";
+ 
+@@ -444,6 +448,17 @@ int parse_args(int argc, char *argv[])
+ 				}
+ 			}
+ 			break;
++		case 's': // -s display mode: 0 windowed, 1 windowed fullscreen, 2 fullscreen
++			if (!val && i + 1 < argc) {
++				val = argv[++i];
++			}
++			if (val) {
++				long s = strtol(val, &end, 10);
++				if (s >= DISPMODE_WINDOWED && s <= DISPMODE_FULLSCREEN) {
++					sdl_display_mode = (int)s;
++				}
++			}
++			break;
+ 		case 'n': // -n monitor number for multi-monitor support
+ 			if (!val && i + 1 < argc) {
+ 				val = argv[++i];
+diff --git a/src/gui/options.c b/src/gui/options.c
+index d3d6e7f..c7a8e5e 100644
+--- a/src/gui/options.c
++++ b/src/gui/options.c
+@@ -107,13 +107,17 @@ static void set_music_volume(int percent)
+ 	dirty = 1;
+ }
+ 
+-// Read settings.ini. Called before the window is created, so the display mode and
+-// size saved here replace what -w / -h / -o asked for.
++// Read settings.ini. Called before the window is created. The display mode and size
++// saved here are used unless the command line asked for some (-w, -h, -s or the
++// fullscreen bit of -o): the launcher passes those when the player set them there.
+ void options_load(void)
+ {
+ 	char filename[MAX_PATH], line[256], *val, *end;
+ 	FILE *fp;
+-	int mode = -1, w = 0, h = 0;
++	int mode = -1, w = 0, h = 0, cmdline;
++
++	cmdline = want_width || want_height || sdl_display_mode != -1 ||
++	          (!(game_options & GO_NOTSET) && (game_options & GO_FULL));
+ 
+ 	settings_filename(filename, sizeof(filename));
+ 	fp = fopen(filename, "r");
+@@ -154,12 +158,16 @@ void options_load(void)
+ 		cfg_w = w;
+ 		cfg_h = h;
+ 
+-		sdl_display_mode = mode;
+-		if (mode == DISPMODE_BORDERLESS) {
+-			want_width = want_height = 0;
+-		} else if (w >= 640 && h >= 360) {
+-			want_width = w;
+-			want_height = h;
++		if (cmdline) {
++			note("Display settings from the command line replace those in %s", filename);
++		} else {
++			sdl_display_mode = mode;
++			if (mode == DISPMODE_BORDERLESS) {
++				want_width = want_height = 0;
++			} else if (w >= 640 && h >= 360) {
++				want_width = w;
++				want_height = h;
++			}
+ 		}
+ 	}
+ 	dirty = 0;

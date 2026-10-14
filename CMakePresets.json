@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "vs2026",
+      "displayName": "Visual Studio 2026 (clang-cl, x64)",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "toolset": "ClangCL"
+    },
+    {
+      "name": "vs2022",
+      "displayName": "Visual Studio 2022 (clang-cl, x64)",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "ClangCL"
+    },
+    {
+      "name": "ninja",
+      "displayName": "Ninja + clang-cl (Developer prompt, Release)",
+      "inherits": "windows-base",
+      "generator": "Ninja",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": { "intelliSenseMode": "windows-clang-x64" }
+      }
+    },
+    {
+      "name": "ninja-debug",
+      "displayName": "Ninja + clang-cl (Developer prompt, Debug)",
+      "inherits": "ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "vs2026", "configurePreset": "vs2026", "configuration": "Release" },
+    { "name": "vs2022", "configurePreset": "vs2022", "configuration": "Release" },
+    { "name": "ninja", "configurePreset": "ninja" },
+    { "name": "ninja-debug", "configurePreset": "ninja-debug" }
+  ]
+}

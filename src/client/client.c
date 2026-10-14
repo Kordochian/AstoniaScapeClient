@@ -1,0 +1,667 @@
+/*
+ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
+ *
+ * Client/Server Communication
+ *
+ * Parses server commands and sends back player input
+ *
+ */
+
+#include "dll.h"
+#include "astonia_net.h"
+#include <math.h>
+#include <time.h>
+#include <zlib.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_stdinc.h>
+#include <SDL3/SDL_timer.h>
+
+#include "astonia.h"
+#include "client/client.h"
+#include "client/client_private.h"
+#include "sdl/sdl.h"
+#include "sdl/sdl_private.h"
+#include "gui/gui.h"
+#include "modder/modder.h"
+#include "protocol.h"
+
+#define CLIENT_PROTOCOL_VERSION 11 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window, 10: effects tab, 11: combat style panel
+
+unsigned int display_gfx = 0;
+uint32_t display_time = 0;
+static int rec_bytes = 0;
+static int sent_bytes = 0;
+static astonia_sock *sock = NULL;
+int sockstate = 0;
+static Uint64 socktime = 0;
+time_t socktimeout = 0;
+int change_area = 0;
+int kicked_out = 0;
+unsigned int unique = 0;
+unsigned int usum = 0;
+uint16_t target_port = 5556;
+DLL_EXPORT char *target_server = NULL;
+DLL_EXPORT char password[16];
+static int zsinit;
+static struct z_stream_s zs;
+
+DLL_EXPORT char username[40];
+DLL_EXPORT tick_t tick;
+DLL_EXPORT uint32_t mirror = 0;
+DLL_EXPORT uint32_t realtime;
+DLL_EXPORT int protocol_version = 0;
+
+uint32_t newmirror = 0;
+int lasttick; // ticks in inbuf
+static size_t lastticksize; // size inbuf must reach to get the last tick complete in the queue
+uint64_t last_tick_received_time = 0; // SDL_GetTicks() when last server tick batch was received
+uint64_t tick_receive_interval = 0; // Time between server tick batch arrivals (ms)
+
+static struct queue queue[Q_SIZE];
+int q_in, q_out, q_size;
+
+static size_t ticksize;
+static size_t inused;
+static size_t indone;
+int login_done;
+static unsigned char inbuf[MAX_INBUF];
+
+static size_t outused;
+static unsigned char outbuf[MAX_OUTBUF];
+
+DLL_EXPORT uint16_t act;
+DLL_EXPORT uint16_t actx;
+DLL_EXPORT uint16_t acty;
+
+DLL_EXPORT unsigned int cflags; // current item flags
+DLL_EXPORT unsigned int csprite; // and sprite
+
+DLL_EXPORT uint16_t originx;
+DLL_EXPORT uint16_t originy;
+DLL_EXPORT struct map map[(DISTMAX * 2 + 1) * (DISTMAX * 2 + 1)];
+DLL_EXPORT struct map map2[(DISTMAX * 2 + 1) * (DISTMAX * 2 + 1)];
+
+DLL_EXPORT int16_t value[2][V_MAX];
+DLL_EXPORT uint32_t item[MAX_INVENTORYSIZE];
+DLL_EXPORT uint32_t item_flags[MAX_INVENTORYSIZE];
+DLL_EXPORT stat_t hp;
+DLL_EXPORT stat_t mana;
+DLL_EXPORT stat_t rage;
+DLL_EXPORT stat_t endurance;
+DLL_EXPORT stat_t lifeshield;
+DLL_EXPORT uint32_t experience;
+DLL_EXPORT uint32_t experience_used;
+DLL_EXPORT struct cskill cskill[MAXCSKILL];
+DLL_EXPORT int cskill_active = 0;
+DLL_EXPORT struct effline effline[MAXEFFLINE];
+DLL_EXPORT int effline_cnt = 0;
+DLL_EXPORT int combat_style = -1; // protocol 11: melee XP style from the server, -1 = none
+DLL_EXPORT uint32_t mil_exp;
+DLL_EXPORT uint32_t gold;
+
+DLL_EXPORT struct player player[MAXCHARS];
+
+DLL_EXPORT union ceffect ceffect[MAXEF];
+DLL_EXPORT unsigned char ueffect[MAXEF];
+
+DLL_EXPORT int con_type;
+DLL_EXPORT char con_name[80];
+DLL_EXPORT int con_cnt;
+DLL_EXPORT uint32_t container[MAX_CONTAINERSIZE];
+DLL_EXPORT uint32_t price[MAX_CONTAINERSIZE];
+DLL_EXPORT uint32_t itemprice[MAX_CONTAINERSIZE];
+DLL_EXPORT uint32_t cprice;
+
+DLL_EXPORT uint32_t lookinv[12];
+DLL_EXPORT uint32_t looksprite, lookc1, lookc2, lookc3;
+DLL_EXPORT char look_name[80];
+DLL_EXPORT char look_desc[1024];
+
+DLL_EXPORT char pent_str[7][80];
+
+DLL_EXPORT int pspeed = 0; // 0=normal   1=fast      2=stealth     - like the server
+
+int may_teleport[64 + 32];
+
+DLL_EXPORT int frames_per_second = TICKS;
+int frames_per_second_auto = 1;
+
+DLL_EXPORT int _inventorysize = V3_INVENTORYSIZE;
+DLL_EXPORT int _containersize = V3_CONTAINERSIZE;
+DLL_EXPORT unsigned int _client_dist = 25;
+
+// Unaligned load/store helpers
+DLL_EXPORT void client_send(void *buf, size_t len)
+{
+	if (len > MAX_OUTBUF - outused) {
+		return;
+	}
+
+	memcpy(outbuf + outused, buf, len);
+	outused += len;
+}
+
+void bzero_client(int part)
+{
+	if (part == 0) {
+		lasttick = 0;
+		lastticksize = 0;
+
+		bzero(queue, sizeof(queue));
+		q_in = q_out = q_size = 0;
+
+		zsinit = 0;
+		bzero(&zs, sizeof(zs));
+
+		ticksize = 0;
+		inused = 0;
+		indone = 0;
+		login_done = 0;
+		bzero(inbuf, sizeof(inbuf));
+
+		outused = 0;
+		bzero(outbuf, sizeof(outbuf));
+	}
+
+	if (part == 1) {
+		act = 0;
+		actx = 0;
+		acty = 0;
+
+		cflags = 0;
+		csprite = 0;
+
+		originx = 0;
+		originy = 0;
+		bzero(map, sizeof(map));
+
+		bzero(value, sizeof(value));
+		bzero(item, sizeof(item));
+		bzero(item_flags, sizeof(item_flags));
+		hp = 0;
+		mana = 0;
+		endurance = 0;
+		lifeshield = 0;
+		experience = 0;
+		experience_used = 0;
+		bzero(cskill, sizeof(cskill));
+		cskill_active = 0;
+		bzero(effline, sizeof(effline));
+		effline_cnt = 0;
+		combat_style = -1;
+		mil_exp = 0;
+		gold = 0;
+
+		bzero(player, sizeof(player));
+
+		bzero(ceffect, sizeof(ceffect));
+		bzero(ueffect, sizeof(ueffect));
+
+		con_cnt = 0;
+		bzero(container, sizeof(container));
+		bzero(price, sizeof(price));
+		bzero(itemprice, sizeof(itemprice));
+		cprice = 0;
+
+		bzero(lookinv, sizeof(lookinv));
+		show_look = 0;
+
+		pspeed = 0;
+		pent_str[0][0] = pent_str[1][0] = pent_str[2][0] = pent_str[3][0] = pent_str[4][0] = pent_str[5][0] =
+		    pent_str[6][0] = 0;
+
+		bzero(may_teleport, sizeof(may_teleport));
+		bzero(otext, sizeof(otext));
+
+		amod_areachange();
+		minimap_clear();
+	}
+}
+
+int close_client(void)
+{
+	if (sock) {
+		astonia_net_close(sock);
+		sock = NULL;
+	}
+	if (zsinit) {
+		inflateEnd(&zs);
+		zsinit = 0;
+	}
+
+	sockstate = 0;
+	socktime = 0;
+
+	bzero_client(0);
+	bzero_client(1);
+
+	return 0;
+}
+
+#define MAXPASSWORD 17
+
+static void decrypt(const char *name, char *pass_buf)
+{
+	int i;
+	static const char secret[4][MAXPASSWORD] = {"\000cgf\000de8etzdf\000dx", "jrfa\000v7d\000drt\000edm",
+	    "t6zh\000dlr\000fu4dms\000", "jkdm\000u7z5g\000j77\000g"};
+
+	for (i = 0; i < MAXPASSWORD; i++) {
+		pass_buf[i] = pass_buf[i] ^ secret[name[1] % 4][i] ^ name[i % 3];
+	}
+}
+
+static void send_info(astonia_sock *s)
+{
+	char buf[12] = {0};
+	uint32_t local_ip, peer_ip;
+	astonia_net_local_ipv4(s, &local_ip);
+	astonia_net_peer_ipv4(s, &peer_ip);
+	store_u32(buf + 0, local_ip);
+	store_u32(buf + 4, peer_ip);
+
+#ifdef STORE_UNIQUE
+	load_unique();
+#endif
+
+	store_u32(buf + 8, unique);
+	(void)astonia_net_send(s, buf, 12);
+}
+
+int poll_network(void)
+{
+	int n;
+
+	// something fatal failed (sockstate will somewhen tell you what)
+	if (sockstate < 0) {
+		return -1;
+	}
+
+	// create nonblocking socket
+	if (sockstate == 0 && !kicked_out) {
+		if (SDL_GetTicks() < socktime) {
+			return 0;
+		}
+
+		// reset socket
+		if (sock) {
+			astonia_net_close(sock);
+			sock = NULL;
+		}
+		if (zsinit) {
+			inflateEnd(&zs);
+			zsinit = 0;
+		}
+
+		change_area = 0;
+		kicked_out = 0;
+
+		// reset client
+		bzero_client(0);
+
+		if (!socktimeout) {
+			socktimeout = time(NULL);
+		}
+
+		// connect to server (non-blocking); require hostname string
+		if (target_server == NULL) {
+			fail("Server URL not specified.");
+			sockstate = -3; // fail - no retry
+			return -1;
+		}
+
+		sock = astonia_net_connect(target_server, (unsigned short)target_port, 0);
+		if (!sock) {
+			fail("creating socket failed");
+			sockstate = 0;
+			socktime = SDL_GetTicks() + 5000;
+			return -1;
+		}
+
+		// statechange
+		sockstate = 1;
+		// return 0;
+	}
+
+	// wait until connect is ok
+	if (sockstate == 1) {
+		if (SDL_GetTicks() < socktime) {
+			return 0;
+		}
+
+		n = astonia_net_poll(sock, 2, 50);
+		if (n == 0) { /* timeout -> try next frame */
+			socktime = SDL_GetTicks() + 50;
+			return 0;
+		} else if (n < 0 || (n & 2) == 0) { /* error or not writable */
+			note("connect failed");
+			sockstate = 0;
+			socktime = SDL_GetTicks() + 5000;
+			return -1;
+		}
+
+#ifdef DEVELOPER
+		{
+			uint32_t be = 0;
+			char ip[16] = "unknown";
+			if (astonia_net_peer_ipv4(sock, &be) == 0 && be != 0) {
+				ipv4_be_to_string(be, ip);
+				note("Using login server at %s (%s):%u", target_server, ip, (unsigned)target_port);
+			} else {
+				// Could be IPv6 or not yet retrievable; still log the hostname.
+				note("Using login server at %s:%u", target_server, (unsigned)target_port);
+			}
+		}
+#endif
+
+		// statechange
+		sockstate = 2;
+	}
+
+	// connected - send password and initialize compression buffers
+	if (sockstate == 2) {
+		char tmp[256];
+
+		// initialize compression
+		if (inflateInit(&zs)) {
+			note("zsinit failed");
+			sockstate = -5; // fail - no retry
+			return -1;
+		}
+		zsinit = 1;
+
+		bzero(tmp, sizeof(tmp));
+		strcpy(tmp, username);
+		astonia_net_send(sock, tmp, 40);
+
+		// send password
+		bzero(tmp, sizeof(tmp));
+		strcpy(tmp, password);
+		decrypt(username, tmp);
+		astonia_net_send(sock, tmp, 16);
+
+		store_u32(tmp, 0x8fd46100 | CLIENT_PROTOCOL_VERSION); // magic code + version
+		astonia_net_send(sock, tmp, 4);
+		send_info(sock);
+
+		// statechange
+		sockstate = 3;
+	}
+
+	// here we go ...
+	if (change_area) {
+		sockstate = 0;
+		socktimeout = time(NULL);
+		return 0;
+	}
+
+	if (kicked_out) {
+		sockstate = -6; // fail - no retry
+		close_client();
+		return -1;
+	}
+
+	// check if we have one tick, so we can reset the map and move to state 4 !!! note that this state has no return
+	// statement, so we still read and write)
+	if (sockstate == 3) {
+		if (login_done) { // if (lasttick>1) {
+			// statechange
+			// note("go ahead (left at tick=%d)",tick);
+			// bzero_client(1);
+			sockstate = 4;
+		}
+	}
+
+	// send
+	if (outused && sockstate == 4 && sock) {
+		n = (int)astonia_net_send(sock, outbuf, outused);
+		if (n == 0) {
+			addline("connection lost during write\n");
+			sockstate = 0;
+			socktimeout = time(NULL);
+			return -1;
+		} else if (n < 0) {
+			// would-block -> no progress this frame
+			n = 0;
+		} else {
+			memmove(outbuf, outbuf + n, outused - (size_t)n);
+			outused -= (size_t)n;
+			sent_bytes += n;
+		}
+	}
+
+	// recv
+	n = 0;
+	if (sock && astonia_net_poll(sock, 1, 0) > 0) {
+		n = (int)astonia_net_recv(sock, (char *)inbuf + inused, MAX_INBUF - inused);
+		if (n < 0) {
+			n = 0; /* would-block */
+		} else if (n == 0) {
+			addline("connection lost during read\n");
+			sockstate = 0;
+			socktimeout = time(NULL);
+			return -1;
+		}
+	} else {
+		return 0; /* no data this frame */
+	}
+
+	inused += (size_t)n;
+	rec_bytes += n;
+
+	int ticks_this_poll = 0;
+	while (1) {
+		if (inused >= lastticksize + 2 && *(inbuf + lastticksize) == 0xFF && *(inbuf + lastticksize + 1) == 0xFF) {
+			if (inused < lastticksize + 4) {
+				break; // we have the magic key, but not the length
+			}
+			lastticksize += 4 + net_read16(inbuf + lastticksize + 2);
+		} else if (inused == lastticksize + 1 && *(inbuf + lastticksize) == 0xFF) {
+			// if, for some reason, we only get the starting 0xff but nothing more, we need to wait for the next byte
+			// so we break here, until we have it.
+			break;
+		} else if (inused >= lastticksize + 1 && *(inbuf + lastticksize) & 0x40) {
+			lastticksize += 1 + (*(inbuf + lastticksize) & 0x3F);
+		} else if (inused >= lastticksize + 2) {
+			lastticksize += 2 + (net_read16(inbuf + lastticksize) & 0x3FFF);
+		} else {
+			break;
+		}
+
+		lasttick++;
+		ticks_this_poll++;
+	}
+
+	// Update tick timing once per poll that received ticks (not per individual tick)
+	if (ticks_this_poll > 0) {
+		uint64_t now = SDL_GetTicks();
+		if (last_tick_received_time > 0) {
+			tick_receive_interval = now - last_tick_received_time;
+		}
+		last_tick_received_time = now;
+	}
+
+	return 0;
+}
+
+static void auto_tick(struct map *cmap)
+{
+	unsigned int x, y;
+	map_index_t mn;
+
+	// automatically tick map
+	for (y = 0; y < MAPDY; y++) {
+		for (x = 0; x < MAPDX; x++) {
+			mn = mapmn(x, y);
+			if (!(cmap[mn].csprite)) {
+				continue;
+			}
+
+			cmap[mn].step++;
+			if (cmap[mn].step < cmap[mn].duration) {
+				continue;
+			}
+			cmap[mn].step = 0;
+		}
+	}
+}
+
+tick_t next_tick(void)
+{
+	size_t tick_sz;
+	int size, ret, compress = 0;
+	tick_t attick;
+
+	// no room for next tick, leave it in in-queue
+	if (q_size == Q_SIZE) {
+		return 0;
+	}
+
+	// do we have a new tick
+	if (inused >= 2 && (*(inbuf) == 0xFF) &&
+	    (*(inbuf + 1) == 0xFF)) { // new big tick: starts with 255,255,len1,len2,content...
+		if (inused < 4) {
+			return 0; // we have the 255,255 but not the length
+		}
+		tick_sz = 4 + (net_read16(inbuf + 2));
+		if (inused < tick_sz) { // we have key and length but not the content
+			return 0;
+		}
+		indone = 4;
+	} else if (inused >= 1 && (*(inbuf) == 0xFF) &&
+	           inused < 2) { // this migth be a big tick, but we won't know until we have two bytes at least
+		return 0; // so try again later
+	} else if (inused >= 1 && (*(inbuf) & 0x40)) { // bit 14 set signifies a small (<64 bytes) tick
+		tick_sz = 1 + (*(inbuf) & 0x3F);
+		if (inused < tick_sz) {
+			return 0;
+		}
+		indone = 1;
+		if (*inbuf & 0x80) {
+			compress = 1;
+		}
+	} else if (inused >= 2 && !(*(inbuf) & 0x40)) { // "normal" tick, up to 16382 bytes
+		tick_sz = 2 + (net_read16(inbuf) & 0x3FFF);
+		if (inused < tick_sz) {
+			return 0;
+		}
+		indone = 2;
+		if (*inbuf & 0x80) {
+			compress = 1;
+		}
+	} else {
+		return 0;
+	}
+
+	// decompress
+	if (compress) {
+		zs.next_in = inbuf + indone;
+		zs.avail_in = (unsigned int)(tick_sz - indone);
+
+		zs.next_out = queue[q_in].buf;
+		zs.avail_out = sizeof(queue[q_in].buf);
+
+		ret = inflate(&zs, Z_SYNC_FLUSH);
+		if (ret != Z_OK) {
+			warn("Compression error %d\n", ret);
+			quit = 1;
+			return 0;
+		}
+
+		if (zs.avail_in) {
+			warn("Decompress has left over input. This isn't supposed to happen (%d)!\n", zs.avail_in);
+			quit = 1;
+			return 0;
+		}
+
+		size = (int)(sizeof(queue[q_in].buf) - zs.avail_out);
+	} else {
+		size = (int)(tick_sz - indone);
+		memcpy(queue[q_in].buf, inbuf + indone, (size_t)size);
+	}
+
+
+	queue[q_in].size = size;
+
+	auto_tick(map2);
+	attick = prefetch(queue[q_in].buf, queue[q_in].size);
+
+	q_in = (q_in + 1) % Q_SIZE;
+	q_size++;
+
+	// remove tick from inbuf
+	if (inused >= tick_sz) {
+		memmove(inbuf, inbuf + tick_sz, inused - tick_sz);
+	} else {
+		note("kuckuck!");
+	}
+	inused = inused - tick_sz;
+
+	// adjust some values
+	lasttick--;
+	lastticksize -= tick_sz;
+
+	return attick;
+}
+
+int do_tick(void)
+{
+	// process tick
+	if (q_size > 0) {
+		auto_tick(map);
+		process(queue[q_out].buf, queue[q_out].size);
+		q_out = (q_out + 1) % Q_SIZE;
+		q_size--;
+		hover_capture_tick();
+		sound_fade_tick();
+
+		// increase tick
+		tick++;
+		if (tick % TICKS == 0) {
+			realtime++;
+		}
+
+		return 1;
+	}
+
+	return 0;
+}
+
+void cl_ticker(void)
+{
+	char buf[256];
+
+	buf[0] = CL_TICKER;
+	store_u32(buf + 1, tick);
+	client_send(buf, 5);
+}
+
+// X exp yield level Y
+DLL_EXPORT int exp2level(int val)
+{
+	if (val < 1) {
+		return 1;
+	}
+
+	return max(1, (int)(sqrt(sqrt(val))));
+}
+
+// to reach level X you need Y exp
+DLL_EXPORT int level2exp(int level)
+{
+	return (int)pow(level, 4);
+}
+
+DLL_EXPORT map_index_t mapmn(unsigned int x, unsigned int y)
+{
+	if (x >= MAPDX || y >= MAPDY) {
+		return MAXMN;
+	}
+	return x + y * MAPDX;
+}
+
+void set_v35_inventory(void)
+{
+	_inventorysize = V35_INVENTORYSIZE;
+	_containersize = V35_CONTAINERSIZE;
+}

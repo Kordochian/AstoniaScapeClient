@@ -1,0 +1,428 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 221c609..06117c6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -55,7 +55,7 @@ set(MOAC_SOURCES
+     src/sdl/sdl_draw.c src/sdl/sound.c
+     src/game/resource.rc src/helper/helper.c
+     src/gui/dots.c src/gui/display.c src/gui/teleport.c src/gui/color.c src/gui/cmd.c
+-    src/gui/questlog.c src/gui/craftwin.c src/gui/context.c src/gui/hover.c src/gui/minimap.c src/gui/options.c
++    src/gui/questlog.c src/gui/craftwin.c src/gui/stylewin.c src/gui/context.c src/gui/hover.c src/gui/minimap.c src/gui/options.c
+     src/gui/panels.c
+     src/modder/sharedmem_windows.c src/game/crash_handler_windows.c
+     src/game/memory_windows.c src/gui/draghack_windows.c src/client/unique_windows.c
+diff --git a/src/client/client.c b/src/client/client.c
+index 319645f..6a33ea4 100644
+--- a/src/client/client.c
++++ b/src/client/client.c
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+ 
+-#define CLIENT_PROTOCOL_VERSION 10 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window, 10: effects tab
++#define CLIENT_PROTOCOL_VERSION 11 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window, 10: effects tab, 11: combat style panel
+ 
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+@@ -95,6 +95,7 @@ DLL_EXPORT struct cskill cskill[MAXCSKILL];
+ DLL_EXPORT int cskill_active = 0;
+ DLL_EXPORT struct effline effline[MAXEFFLINE];
+ DLL_EXPORT int effline_cnt = 0;
++DLL_EXPORT int combat_style = -1; // protocol 11: melee XP style from the server, -1 = none
+ DLL_EXPORT uint32_t mil_exp;
+ DLL_EXPORT uint32_t gold;
+ 
+@@ -187,6 +188,7 @@ void bzero_client(int part)
+ 		cskill_active = 0;
+ 		bzero(effline, sizeof(effline));
+ 		effline_cnt = 0;
++		combat_style = -1;
+ 		mil_exp = 0;
+ 		gold = 0;
+ 
+diff --git a/src/client/client.h b/src/client/client.h
+index f2dbab9..25e9cbe 100644
+--- a/src/client/client.h
++++ b/src/client/client.h
+@@ -509,6 +509,8 @@ struct effline {
+ 	char desc[160]; // hover text
+ };
+ DLL_EXPORT extern struct effline effline[MAXEFFLINE];
++// combat style (protocol 11): 0 shared, 1 attack, 2 strength, 3 defence, -1 = the server has none
++DLL_EXPORT extern int combat_style;
+ DLL_EXPORT extern int effline_cnt;
+ DLL_EXPORT extern uint32_t gold;
+ DLL_EXPORT extern tick_t tick;
+diff --git a/src/client/client_private.h b/src/client/client_private.h
+index 42aea97..b013692 100644
+--- a/src/client/client_private.h
++++ b/src/client/client_private.h
+@@ -59,6 +59,7 @@
+ #define SV_SKILLXP          55 // protocol 5: level and XP of one skill
+ #define SV_CRAFTLIST        56 // protocol 6: furnace / anvil recipe list (server skilling.c)
+ #define SV_EFFECTS          57 // protocol 10: effects tab lines (server skillreg.c)
++#define SV_COMBATSTYLE      58 // protocol 11: melee XP style (server skillreg.c)
+ #define SV_MOD1             58
+ #define SV_MOD2             59
+ #define SV_MOD3             60
+diff --git a/src/client/protocol.c b/src/client/protocol.c
+index 23250c2..d9357ad 100644
+--- a/src/client/protocol.c
++++ b/src/client/protocol.c
+@@ -1359,6 +1359,10 @@ void process(unsigned char *buf, int size)
+ 				len = load_u16(buf + 1);
+ 				sv_effects(buf, (int)len);
+ 				break;
++			case SV_COMBATSTYLE:
++				stylewin_receive(buf[1]);
++				len = 2;
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_process(buf);
+@@ -1597,6 +1601,9 @@ uint32_t prefetch(unsigned char *buf, int size)
+ 			case SV_EFFECTS:
+ 				len = load_u16(buf + 1);
+ 				break;
++			case SV_COMBATSTYLE:
++				len = 2;
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_prefetch(buf);
+diff --git a/src/gui/gui.h b/src/gui/gui.h
+index e0fc9fe..20f3246 100644
+--- a/src/gui/gui.h
++++ b/src/gui/gui.h
+@@ -101,6 +101,15 @@ int craftwin_over_control(int x, int y);
+ int craftwin_mouse(int what, int x, int y, int delta);
+ void craftwin_display(void);
+ 
++// combat style panel (stylewin.c, protocol 11)
++void stylewin_receive(int style);
++int stylewin_over(int x, int y);
++int stylewin_over_control(int x, int y);
++int stylewin_mouse(int what, int x, int y);
++void stylewin_display(void);
++void stylewin_get_pos(int *x, int *y);
++void stylewin_set_pos(int x, int y);
++
+ extern int (*get_skltab_sep)(int i);
+ DLL_EXPORT int _get_skltab_sep(int i);
+ extern int (*get_skltab_index)(int n);
+diff --git a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+index e1f8354..fbaf184 100644
+--- a/src/gui/gui_buttons.c
++++ b/src/gui/gui_buttons.c
+@@ -1361,7 +1361,7 @@ void set_cmd_states(void)
+ 	}
+ 
+ 	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || craftwin_over(mousex, mousey) ||
+-	    minimap_over(mousex, mousey)) {
++	    stylewin_over(mousex, mousey) || minimap_over(mousex, mousey)) {
+ 		// the settings and questlog windows, the minimap and the big map take the mouse while it is over them
+ 		butsel = invsel = weasel = consel = sklsel = sklsel2 = telsel = helpsel = colsel = skl_look_sel = questsel =
+ 		    actsel = -1;
+@@ -1369,7 +1369,9 @@ void set_cmd_states(void)
+ 		lcmd = rcmd = CMD_NONE;
+ 		set_cmd_cursor(
+ 		    options_over_control(mousex, mousey) || (!options_over(mousex, mousey) && questwin_over_control(mousex, mousey)) ||
+-		            (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) && craftwin_over_control(mousex, mousey))
++		            (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) && craftwin_over_control(mousex, mousey)) ||
++		            (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) && !craftwin_over(mousex, mousey) &&
++		                stylewin_over_control(mousex, mousey))
+ 		        ? CMD_OPTIONS
+ 				: CMD_NONE);
+ 		return;
+diff --git a/src/gui/gui_core.c b/src/gui/gui_core.c
+index 15a9b25..238b949 100644
+--- a/src/gui/gui_core.c
++++ b/src/gui/gui_core.c
+@@ -425,6 +425,7 @@ int main_loop(void)
+ 				display();
+ 				amod_frame();
+ 				display_mouseover();
++				stylewin_display();
+ 				questwin_display();
+ 				craftwin_display();
+ 				options_display();
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index 498ec88..3c96847 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -334,6 +334,16 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		return;
+ 	}
+ 
++	// the combat style panel
++	if (what != SDL_MOUM_NONE && stylewin_mouse(what, mousex, mousey)) {
++		if (what == SDL_MOUM_LUP) {
++			vk_lbut = 0;
++		} else if (what == SDL_MOUM_RUP) {
++			vk_rbut = 0;
++		}
++		return;
++	}
++
+ 	// the big map window and the minimap (dragged, resized, zoomed with the wheel)
+ 	if (what != SDL_MOUM_NONE && minimap_mouse(what, mousex, mousey, local_y)) {
+ 		if (what == SDL_MOUM_LUP) {
+@@ -387,6 +397,7 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		options_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 		questwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 		craftwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
++		stylewin_mouse(SDL_MOUM_NONE, mousex, mousey);
+ 
+ 		if (chat_slider_mouse(SDL_MOUM_NONE)) {
+ 			break;
+diff --git a/src/gui/hover.c b/src/gui/hover.c
+index 9bba6b4..3d3faa5 100644
+--- a/src/gui/hover.c
++++ b/src/gui/hover.c
+@@ -45,7 +45,8 @@ void display_mouseover(void)
+ 	if (mousex < 0 || mousex >= XRES || mousey < 0 || mousey >= YRES || !sdl_has_focus()) {
+ 		return;
+ 	}
+-	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || craftwin_over(mousex, mousey)) {
++	if (options_over(mousex, mousey) || questwin_over(mousex, mousey) || craftwin_over(mousex, mousey) ||
++	    stylewin_over(mousex, mousey)) {
+ 		return;
+ 	}
+ 	if (minimap_over(mousex, mousey)) {
+diff --git a/src/gui/options.c b/src/gui/options.c
+index cbf1877..06a869f 100644
+--- a/src/gui/options.c
++++ b/src/gui/options.c
+@@ -206,6 +206,11 @@ void options_load(void)
+ 			if (sscanf(val, "%d,%d,%d,%d", &qx, &qy, &qw, &qh) >= 2) {
+ 				questwin_set_pos(qx, qy, qw, qh);
+ 			}
++		} else if (!strcmp(line, "style_pos")) {
++			int sx = 0, sy = 0;
++			if (sscanf(val, "%d,%d", &sx, &sy) == 2) {
++				stylewin_set_pos(sx, sy);
++			}
+ 		} else if (!strcmp(line, "chat_text")) {
+ 			pnl_chat_text = clampi(atoi(val), -1, 1);
+ 		} else if (!strcmp(line, "ui_locked")) {
+@@ -261,6 +266,11 @@ void options_save(void)
+ 		questwin_get_pos(&qx, &qy, &qw, &qh);
+ 		fprintf(fp, "questlog_pos=%d,%d,%d,%d\n", qx, qy, qw, qh);
+ 	}
++	{
++		int sx, sy;
++		stylewin_get_pos(&sx, &sy);
++		fprintf(fp, "style_pos=%d,%d\n", sx, sy);
++	}
+ 	if (pnl_chat_text >= 0) {
+ 		fprintf(fp, "chat_text=%d\n", pnl_chat_text);
+ 	}
+diff --git a/src/gui/stylewin.c b/src/gui/stylewin.c
+new file mode 100644
+index 0000000..200a358
+--- /dev/null
++++ b/src/gui/stylewin.c
+@@ -0,0 +1,203 @@
++/*
++ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Combat style panel (protocol 11): which skill melee damage XP goes to. The server sends the
++ * player's style (SV_COMBATSTYLE, server skillreg.c) at login and after every change; clicking a
++ * row sends "/style <name>". Drawn like the old raise rows of the skills panel: a dot and a bar
++ * under each row, blue for the selected style, red for the others. Drag it by its title (unless
++ * the panels are locked); the position is saved in settings.ini as style_pos=dx,dy.
++ */
++
++#include <stdint.h>
++#include <string.h>
++#include <stdio.h>
++#include <SDL3/SDL.h>
++
++#include "astonia.h"
++#include "gui/gui.h"
++#include "gui/gui_private.h"
++#include "game/game.h"
++#include "client/client.h"
++#include "client/protocol.h"
++#include "sdl/sdl.h"
++
++#define SW_W     150
++#define SW_TITLE 14
++#define SW_ROW   18
++#define SW_ROWS  4
++#define SW_H     (SW_TITLE + 6 + SW_ROWS * SW_ROW)
++
++// same order as the server's STYLE_* numbers
++static const char *sw_name[SW_ROWS] = {"Shared", "Attack", "Strength", "Defence"};
++static const char *sw_cmd[SW_ROWS] = {"shared", "attack", "strength", "defence"};
++
++static int sw_dx = 0, sw_dy = 0, sw_drag = 0, sw_drag_x, sw_drag_y;
++static int sw_pressed = -1;
++
++static int sw_x(void)
++{
++	int x = XRES - SW_W - 10 + sw_dx;
++	return x < 0 ? 0 : (x > XRES - SW_W - 1 ? XRES - SW_W - 1 : x);
++}
++
++static int sw_y(void)
++{
++	int y = YRES / 3 + sw_dy;
++	return y < 0 ? 0 : (y > YRES - SW_H - 1 ? YRES - SW_H - 1 : y);
++}
++
++void stylewin_receive(int style)
++{
++	combat_style = (style >= 0 && style < SW_ROWS) ? style : 0;
++}
++
++void stylewin_get_pos(int *x, int *y)
++{
++	*x = sw_dx;
++	*y = sw_dy;
++}
++
++void stylewin_set_pos(int x, int y)
++{
++	sw_dx = x;
++	sw_dy = y;
++}
++
++int stylewin_over(int x, int y)
++{
++	int px = sw_x(), py = sw_y();
++
++	return combat_style >= 0 && x >= px && x <= px + SW_W && y >= py && y <= py + SW_H;
++}
++
++// -2 = title, 0..3 = row, -1 = nothing
++static int sw_hit(int x, int y)
++{
++	int py = sw_y(), r;
++
++	if (!stylewin_over(x, y)) {
++		return -1;
++	}
++	if (y < py + SW_TITLE) {
++		return -2;
++	}
++	r = (y - py - SW_TITLE - 3) / SW_ROW;
++	return r >= 0 && r < SW_ROWS ? r : -1;
++}
++
++int stylewin_over_control(int x, int y)
++{
++	return sw_hit(x, y) >= 0;
++}
++
++// level of the skill called name, 0 if the server did not send it
++static int sw_level(const char *name)
++{
++	int n;
++
++	for (n = 0; n < MAXCSKILL; n++) {
++		if (cskill[n].used && !strcmp(cskill[n].name, name)) {
++			return cskill[n].level;
++		}
++	}
++	return 0;
++}
++
++// Mouse input. Returns 1 if the event belongs to the panel.
++int stylewin_mouse(int what, int x, int y)
++{
++	int h;
++	char buf[64];
++
++	if (combat_style < 0) {
++		return 0;
++	}
++
++	if (what == SDL_MOUM_NONE) {
++		if (sw_drag) {
++			sw_dx += x - sw_drag_x;
++			sw_dy += y - sw_drag_y;
++			sw_drag_x = x;
++			sw_drag_y = y;
++		}
++		return 0;
++	}
++
++	if (what == SDL_MOUM_LUP && (sw_drag || sw_pressed != -1)) {
++		if (sw_drag) {
++			sw_drag = 0;
++			sw_dx = sw_x() - (XRES - SW_W - 10); // not past an edge
++			sw_dy = sw_y() - YRES / 3;
++			options_save();
++		}
++		h = sw_hit(x, y);
++		if (h >= 0 && h == sw_pressed && h != combat_style) {
++			snprintf(buf, sizeof(buf), "/style %s", sw_cmd[h]);
++			cmd_text(buf);
++		}
++		sw_pressed = -1;
++		return 1;
++	}
++
++	if (!stylewin_over(x, y)) {
++		return 0;
++	}
++
++	if (what == SDL_MOUM_LDOWN) {
++		h = sw_hit(x, y);
++		if (h == -2 && !panels_locked) {
++			sw_dx = sw_x() - (XRES - SW_W - 10);
++			sw_dy = sw_y() - YRES / 3;
++			sw_drag = 1;
++			sw_drag_x = x;
++			sw_drag_y = y;
++		}
++		sw_pressed = h;
++	}
++	return 1;
++}
++
++void stylewin_display(void)
++{
++	int px, py, hov, r, y, sel, lvl;
++	unsigned short col, dark;
++
++	if (combat_style < 0) {
++		return;
++	}
++
++	px = sw_x();
++	py = sw_y();
++	hov = sw_hit(mousex, mousey);
++
++	render_push_clip();
++	render_set_clip(0, 0, XRES, YRES);
++
++	gui_draw_panel(px, py, SW_W + 1, SW_H + 1, SW_TITLE);
++	render_text(px + SW_W / 2, py + 3, IRGB(31, 22, 6), RENDER_ALIGN_CENTER, "Combat Style");
++
++	for (r = 0; r < SW_ROWS; r++) {
++		y = py + SW_TITLE + 3 + r * SW_ROW;
++		sel = r == combat_style;
++		col = sel ? bluecolor : redcolor;
++		dark = sel ? darkbluecolor : darkredcolor;
++
++		if (hov == r && !sel) {
++			render_rect(px + 3, y, px + SW_W - 3, y + SW_ROW - 2, IRGB(8, 6, 3));
++		}
++
++		// the dot, like the old raise buttons
++		render_circle_filled_alpha(px + 10, y + 7, 4, col, 255);
++		render_circle_alpha(px + 10, y + 7, 4, dark, 255);
++
++		render_text(px + 20, y + 2, sel || hov == r ? whitecolor : textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, sw_name[r]);
++		if (r && (lvl = sw_level(sw_name[r])) > 0) {
++			render_text_fmt(px + SW_W - 8, y + 2, sel ? whitecolor : textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, "%d", lvl);
++		}
++
++		// the bar under the row: full blue when selected, red otherwise
++		render_rect(px + 20, y + 13, px + SW_W - 8, y + 15, col);
++	}
++
++	render_pop_clip();
++}

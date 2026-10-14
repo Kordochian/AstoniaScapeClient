@@ -1,0 +1,328 @@
+.PHONY: all debug release build-sdl3 build-sdl3-mixer verify-sdl3 verify-sdl3-mixer
+
+# Build type: release (default) or debug
+# Usage: make BUILD_TYPE=debug
+BUILD_TYPE ?= release
+
+all: bin/moac
+
+CC=clang
+EXTRA_ARCH_FLAGS ?=
+ifneq (,$(findstring znver4,$(EXTRA_ARCH_FLAGS)))
+RUST_CPU_FLAGS=-C target-cpu=znver4
+else
+RUST_CPU_FLAGS=
+endif
+# Get SDL3 flags and convert -I to -isystem to suppress warnings from SDL headers
+SDL_CFLAGS_RAW=$(shell pkg-config sdl3 --cflags)
+SDL_CFLAGS=$(patsubst -I%,-isystem %,$(SDL_CFLAGS_RAW))
+
+# Build type configuration
+ifeq ($(BUILD_TYPE),debug)
+    OPT=-O0
+    DEBUG=-gdwarf-4 -g3
+    DEVELOPER_FLAGS=-DDEVELOPER
+    $(info Building DEBUG configuration)
+else
+    OPT=-O3
+    DEBUG=-gdwarf-4
+    DEVELOPER_FLAGS=-DNDEBUG
+    $(info Building RELEASE configuration)
+endif
+
+STRICT_WARNING_FLAGS = \
+    -Wall -Wextra -Wpedantic \
+    -Wformat=2 \
+    -Wnull-dereference \
+    -Wdouble-promotion \
+    -Wcast-align \
+    -Wcast-qual \
+    -Wconversion -Wsign-conversion \
+    -Wmissing-prototypes -Wstrict-prototypes \
+    -Wvla \
+    -Wfloat-equal \
+    -Wnewline-eof
+
+WARNING_FLAGS ?= $(STRICT_WARNING_FLAGS) -Werror
+
+# Default to using mimalloc unless USE_MIMALLOC=0 is set
+USE_MIMALLOC ?= 1
+
+CFLAGS=$(OPT) $(DEBUG) $(WARNING_FLAGS) $(DEVELOPER_FLAGS) -fno-omit-frame-pointer -fvisibility=hidden $(SDL_CFLAGS) $(EXTRA_ARCH_FLAGS) -Iinclude -Isrc -DUSE_MIMALLOC=$(USE_MIMALLOC) -DSDL_FUNCTION_POINTER_IS_VOID_POINTER
+CFLAGS_PIC=$(OPT) $(DEBUG) $(WARNING_FLAGS) $(DEVELOPER_FLAGS) -fPIC -fno-omit-frame-pointer -fvisibility=hidden $(SDL_CFLAGS) $(EXTRA_ARCH_FLAGS) -Iinclude -Isrc -DUSE_MIMALLOC=$(USE_MIMALLOC) -DSDL_FUNCTION_POINTER_IS_VOID_POINTER
+# DT_RPATH (not RUNPATH) so the bundled libraries' own dependencies (e.g. libzip -> libbz2)
+# are also resolved next to the binary, not only moac's direct ones.
+LDFLAGS=$(OPT) $(DEBUG) -rdynamic -Wl,--disable-new-dtags,-rpath,\$$ORIGIN
+
+SDL_LIBS=$(shell pkg-config sdl3 --libs)
+LIBS = -lz -lpng -lzip $(SDL_LIBS) -lSDL3_mixer -lm
+ifeq ($(USE_MIMALLOC),1)
+LIBS += -lmimalloc
+endif
+
+ASTONIA_NET_DIR=astonia_net
+ASTONIA_NET_TGT=x86_64-unknown-linux-gnu
+ASTONIA_NET_LIB=$(ASTONIA_NET_DIR)/target/$(ASTONIA_NET_TGT)/release/libastonia_net.so
+
+OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui_inventory.o src/gui/gui_buttons.o src/gui/gui_map.o\
+			src/client/client.o src/client/protocol.o src/client/skill.o\
+			src/game/game_core.o src/game/game_effects.o src/game/game_lighting.o src/game/game_display.o\
+			src/game/render.o src/game/font.o src/game/main.o src/game/sprite.o src/game/sprite_config.o\
+			src/game/memory.o\
+			src/modder/modder.o\
+			src/sdl/sdl_core.o src/sdl/sdl_texture.o src/sdl/sdl_image.o src/sdl/sdl_effects.o src/sdl/sdl_draw.o src/sdl/sound.o\
+			src/helper/helper.o\
+			src/gui/dots.o src/gui/display.o src/gui/teleport.o src/gui/color.o src/gui/cmd.o\
+			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o\
+			src/game/memory_linux.o src/game/version.o\
+			src/lib/cjson/cJSON.o
+
+bin/moac:	verify-sdl3-mixer $(OBJS) $(ASTONIA_NET_LIB)
+		mkdir -p bin
+		cp $(ASTONIA_NET_LIB) bin/
+		$(CC) $(LDFLAGS) -o bin/moac $(OBJS) $(LIBS) -Lbin -lastonia_net
+
+$(ASTONIA_NET_LIB):
+		rustup target add $(ASTONIA_NET_TGT)
+		cd $(ASTONIA_NET_DIR) && RUSTFLAGS="$(RUST_CPU_FLAGS)" cargo build --release --target $(ASTONIA_NET_TGT)
+
+bin/amod.so:	src/amod/amod.o bin/moac
+		$(CC) $(LDFLAGS) -shared -o bin/amod.so src/amod/amod.o
+
+src/amod/amod.o:	src/amod/amod.c src/amod/amod.h src/amod/amod_structs.h
+		$(CC) $(CFLAGS_PIC) -c -o $@ $<
+
+bin/anicopy:	src/helper/anicopy.c
+		$(CC) $(OPT) $(DEBUG) -Wall -o bin/anicopy src/helper/anicopy.c
+
+bin/convert:	src/helper/convert.c
+		$(CC) $(OPT) $(DEBUG) -Wall -DSTANDALONE -DUSE_MIMALLOC=$(USE_MIMALLOC) -o bin/convert src/helper/convert.c -lpng -lzip $(if $(filter 1,$(USE_MIMALLOC)),-lmimalloc,)
+
+
+src/client/client.o:	src/client/client.c src/astonia.h src/client/client.h src/client/client_private.h src/sdl/sdl.h
+src/client/protocol.o: src/client/protocol.c src/astonia.h src/client/client.h src/client/client_private.h src/gui/gui.h src/modder/modder.h src/client/protocol.h
+
+src/game/render.o:		src/game/render.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/sdl/sdl.h
+src/game/font.o:	src/game/font.c src/game/game.h src/game/game_private.h
+src/game/game.o:    	src/game/game.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h
+src/game/main.o:	src/game/main.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h src/sdl/sdl.h src/modder/modder.h
+src/game/skill.o:      	src/game/skill.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h
+src/game/sprite.o:	src/game/sprite.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h src/game/sprite_config.h
+src/game/sprite_config.o:	src/game/sprite_config.c src/game/sprite_config.h src/lib/cjson/cJSON.h src/astonia.h
+
+# cJSON library (third-party, suppress warnings)
+src/lib/cjson/cJSON.o:	src/lib/cjson/cJSON.c src/lib/cjson/cJSON.h
+		$(CC) $(OPT) $(DEBUG) -fPIC -fno-omit-frame-pointer -fvisibility=hidden -Isrc -c -o $@ $<
+
+src/gui/color.o:	src/gui/color.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/context.o:	src/gui/context.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/cmd.o:		src/gui/cmd.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+src/gui/dots.o:		src/gui/dots.c src/astonia.h src/gui/gui.h src/gui/gui_private.h
+src/gui/display.o:	src/gui/display.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/gui.o:		src/gui/gui.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h  src/sdl/sdl.h src/modder/modder.h
+src/gui/hover.o:	src/gui/hover.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/gui/gui.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+src/gui/minimap.o:	src/gui/minimap.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+src/gui/options.o:	src/gui/options.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+src/gui/teleport.o:	src/gui/teleport.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/questlog.o:	src/gui/questlog.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+
+# Refactored GUI modules
+src/gui/gui_core.o:	src/gui/gui_core.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+src/gui/gui_input.o:	src/gui/gui_input.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h
+src/gui/gui_display.o:	src/gui/gui_display.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h
+src/gui/gui_inventory.o:	src/gui/gui_inventory.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/gui_buttons.o:	src/gui/gui_buttons.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h
+src/gui/gui_map.o:		src/gui/gui_map.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+
+# Refactored game modules
+src/game/game_core.o:	src/game/game_core.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h
+src/game/game_display.o:	src/game/game_display.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h src/sdl/sdl.h
+src/game/game_effects.o:	src/game/game_effects.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h
+src/game/game_lighting.o:	src/game/game_lighting.c src/astonia.h src/game/game.h src/game/game_private.h
+
+# Refactored SDL modules
+src/sdl/sdl_core.o:	src/sdl/sdl_core.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h src/client/client.h src/gui/gui.h src/modder/modder.h
+src/sdl/sdl_texture.o:	src/sdl/sdl_texture.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+src/sdl/sdl_image.o:	src/sdl/sdl_image.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h src/game/game.h
+src/sdl/sdl_effects.o:	src/sdl/sdl_effects.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+src/sdl/sdl_draw.o:	src/sdl/sdl_draw.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h src/game/game.h
+
+src/helper/helper.o:	src/helper/helper.c src/astonia.h
+src/helper/convert.o:	src/helper/convert.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+
+src/modder/modder.o:	src/modder/modder.c src/astonia.h src/modder/modder.h src/modder/modder_private.h src/client/client.h
+
+src/sdl/sdl.o:		src/sdl/sdl.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+src/sdl/sound.o:      	src/sdl/sound.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+
+src/game/memory.o: src/game/memory.c src/game/memory.h src/astonia.h src/sdl/sdl.h
+		$(CC) $(CFLAGS) -c -o $@ $<
+
+src/game/memory_linux.o: src/game/memory_linux.c
+		$(CC) $(CFLAGS_PIC) -c -o $@ $<
+
+clean:
+	@echo "Cleaning build artifacts..."
+	-rm -f src/*/*.o src/*/*-sanitizer.o src/*/*-coverage.o
+	-rm -f bin/moac bin/moac-sanitizer bin/moac-coverage
+	-rm -f bin/*.so bin/convert bin/anicopy
+	@echo "Cleaning coverage files..."
+	-find . -type f -name '*.gcda' -delete
+	-find . -type f -name '*.gcno' -delete
+	-find . -type f -name '*.gcov' -delete
+	-find . -type f -name '*.gcov.json.gz' -delete
+	-rm -f coverage.info coverage-filtered.info
+	-rm -rf coverage-html
+	@echo "Cleaning profiling data..."
+	-find . -type f -name '*.profraw' -delete
+	-find . -type f -name '*.profdata' -delete
+	@echo "Cleaning analysis reports..."
+	-rm -f compile_commands.json
+	-rm -f valgrind-report.txt
+	-rm -f asan-report.txt.*
+	-rm -f ubsan-report.txt.*
+	-rm -f .clang-tidy-*
+	@echo "Cleaning Rust artifacts..."
+	-rm -rf astonia_net/target
+	@echo "Cleaning distribution artifacts..."
+	-rm -rf distrib
+	-rm -f linux_client.tar.gz
+
+# Prepare distribution staging directory (bundles shared library dependencies)
+distrib-stage:
+	@echo "Preparing Linux distribution staging..."
+	@bash build/tools/package_linux.sh
+
+# Legacy target for local development (creates archive)
+distrib: distrib-stage
+	@echo "Creating distribution archive..."
+	@cd distrib && tar czf ../linux_client.tar.gz linux_client
+	@echo "Distribution package created: linux_client.tar.gz"
+
+amod:		bin/amod.so bin/moac
+convert:	bin/convert
+anicopy:	bin/anicopy
+
+# Code quality builds
+SANITIZER_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -g
+COVERAGE_FLAGS=--coverage -fprofile-arcs -ftest-coverage
+
+OBJS_SANITIZER=$(OBJS:.o=-sanitizer.o)
+OBJS_COVERAGE=$(OBJS:.o=-coverage.o)
+
+sanitizer: bin/moac-sanitizer
+
+bin/moac-sanitizer: USE_MIMALLOC=0
+bin/moac-sanitizer: $(OBJS_SANITIZER) $(ASTONIA_NET_LIB)
+	cp $(ASTONIA_NET_LIB) bin/
+	$(CC) $(LDFLAGS) $(SANITIZER_FLAGS) -o bin/moac-sanitizer $(OBJS_SANITIZER) $(filter-out -lmimalloc,$(LIBS)) -Lbin -lastonia_net
+
+%-sanitizer.o: USE_MIMALLOC=0
+%-sanitizer.o: %.c
+	$(CC) $(CFLAGS) $(SANITIZER_FLAGS) -c -o $@ $<
+
+# cJSON library (third-party) - build with relaxed warnings for sanitizer
+src/lib/cjson/cJSON-sanitizer.o: src/lib/cjson/cJSON.c src/lib/cjson/cJSON.h
+	$(CC) $(OPT) $(DEBUG) -fPIC -fno-omit-frame-pointer -fvisibility=hidden -Isrc $(SANITIZER_FLAGS) -c -o $@ $<
+
+coverage: bin/moac-coverage
+
+bin/moac-coverage: $(OBJS_COVERAGE) $(ASTONIA_NET_LIB)
+	cp $(ASTONIA_NET_LIB) bin/
+	$(CC) $(LDFLAGS) $(COVERAGE_FLAGS) -o bin/moac-coverage $(OBJS_COVERAGE) $(LIBS) -Lbin -lastonia_net
+
+%-coverage.o: %.c
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -c -o $@ $<
+
+# cJSON library (third-party) - build with relaxed warnings for coverage
+src/lib/cjson/cJSON-coverage.o: src/lib/cjson/cJSON.c src/lib/cjson/cJSON.h
+	$(CC) $(OPT) $(DEBUG) -fPIC -fno-omit-frame-pointer -fvisibility=hidden -Isrc $(COVERAGE_FLAGS) -c -o $@ $<
+
+# Convenience targets for build types
+debug:
+	$(MAKE) -f build/make/Makefile.linux BUILD_TYPE=debug
+
+release:
+	$(MAKE) -f build/make/Makefile.linux BUILD_TYPE=release
+
+# Verify SDL3 is available (fails with helpful message if not found)
+verify-sdl3:
+	@if ! pkg-config --exists sdl3 2>/dev/null; then \
+		echo ""; \
+		echo "ERROR: SDL3 not found."; \
+		echo ""; \
+		echo "Please install SDL3 using your package manager. For example:"; \
+		echo "  Ubuntu/Debian: sudo apt-get install libsdl3-dev"; \
+		echo "  Fedora: sudo dnf install SDL3-devel"; \
+		echo "  Arch: sudo pacman -S sdl3"; \
+		echo ""; \
+		echo "Alternatively, you can build from source using:"; \
+		echo "  make build-sdl3"; \
+		echo ""; \
+		echo "Note: Using your package manager is usually recommended."; \
+		echo ""; \
+		exit 1; \
+	fi
+
+# Verify SDL3_mixer is available (fails with helpful message if not found)
+verify-sdl3-mixer: verify-sdl3
+	@if ! pkg-config --exists sdl3-mixer 2>/dev/null; then \
+		echo ""; \
+		echo "ERROR: SDL3_mixer not found."; \
+		echo ""; \
+		echo "Please install SDL3_mixer using your package manager. For example:"; \
+		echo "  Ubuntu/Debian: sudo apt-get install libsdl3-mixer-dev"; \
+		echo "  Fedora: sudo dnf install SDL3_mixer-devel"; \
+		echo "  Arch: sudo pacman -S sdl3_mixer"; \
+		echo ""; \
+		echo "Alternatively, you can build from source using:"; \
+		echo "  make build-sdl3-mixer"; \
+		echo ""; \
+		echo "Note: Using your package manager is usually recommended."; \
+		echo "      SDL3_mixer requires SDL3 to be installed first."; \
+		echo ""; \
+		exit 1; \
+	fi
+
+# Build SDL3 from source (always builds, no detection)
+# Installs to /usr/local (standard for Linux source builds)
+build-sdl3:
+	@echo "Building SDL3 from source..."
+	@TMP_DIR=$${TMPDIR:-$${TMP:-/tmp}}; \
+	BUILD_DIR=$$([ -d "$$TMP_DIR" ] && echo "$$TMP_DIR" || echo "/tmp"); \
+	cd "$$BUILD_DIR" && \
+		rm -rf SDL SDL-build && \
+		git clone --depth 1 --branch main https://github.com/libsdl-org/SDL.git SDL && \
+		cmake -S SDL -B SDL-build \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX=/usr/local \
+			-DSDL_STATIC=OFF && \
+		cmake --build SDL-build && \
+		sudo cmake --install SDL-build && \
+		sudo ldconfig && \
+		cd "$$BUILD_DIR" && \
+		rm -rf SDL SDL-build && \
+		echo "SDL3 installed to /usr/local"
+
+# Build SDL3_mixer from source (always builds, no detection)
+# Note: SDL3 must be installed first
+# Installs to /usr/local (standard for Linux source builds)
+SDL3_MIXER_VERSION ?= prerelease-3.1.2
+build-sdl3-mixer: verify-sdl3
+	@echo "Building SDL3_mixer $(SDL3_MIXER_VERSION) from source..."
+	@TMP_DIR=$${TMPDIR:-$${TMP:-/tmp}}; \
+	BUILD_DIR=$$([ -d "$$TMP_DIR" ] && echo "$$TMP_DIR" || echo "/tmp"); \
+	cd "$$BUILD_DIR" && \
+		rm -rf SDL_mixer-$(SDL3_MIXER_VERSION) SDL_mixer-build && \
+		curl -sL https://github.com/libsdl-org/SDL_mixer/archive/refs/tags/$(SDL3_MIXER_VERSION).tar.gz | tar xz && \
+		cmake -S SDL_mixer-$(SDL3_MIXER_VERSION) -B SDL_mixer-build \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX=/usr/local \
+			-DCMAKE_PREFIX_PATH=/usr/local \
+			-DSDL3MIXER_VENDORED=ON && \
+		cmake --build SDL_mixer-build && \
+		sudo cmake --install SDL_mixer-build && \
+		sudo ldconfig && \
+		cd "$$BUILD_DIR" && \
+		rm -rf SDL_mixer-$(SDL3_MIXER_VERSION) SDL_mixer-build && \
+		echo "SDL3_mixer $(SDL3_MIXER_VERSION) installed to /usr/local"

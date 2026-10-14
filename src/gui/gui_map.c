@@ -1,0 +1,174 @@
+/*
+ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
+ *
+ * Graphical User Interface - Map coordinate functions
+ *
+ */
+
+#include <inttypes.h>
+#include <time.h>
+#include <math.h>
+#include <SDL3/SDL.h>
+
+#include "astonia.h"
+#include "gui/gui.h"
+#include "gui/gui_private.h"
+#include "client/client.h"
+#include "game/game.h"
+#include "sdl/sdl.h"
+#include "modder/modder.h"
+
+void set_mapoff(int cx, int cy, int mdx, int mdy)
+{
+	mapoffx = (cx - (mdx / 2 - mdy / 2) * (FDX / 2));
+	mapoffy = (cy - (mdx / 2 + mdy / 2) * (FDY / 2));
+}
+
+void set_mapadd(int addx, int addy)
+{
+	mapaddx = addx;
+	mapaddy = addy;
+}
+
+void mtos(unsigned int mapx, unsigned int mapy, int *scrx, int *scry)
+{
+	*scrx = (mapoffx + mapaddx) + ((int)mapx - (int)mapy) * (FDX / 2);
+	*scry = (mapoffy + mapaddy) + ((int)mapx + (int)mapy) * (FDY / 2);
+}
+
+// Is this screen position on the map? That is anywhere not covered by an interface panel.
+int gui_point_in_map(int x, int y)
+{
+	if (x < 0 || y < 0 || x >= XRES || y >= YRES) {
+		return 0;
+	}
+	return pnl_at(x, y) == -1;
+}
+
+// The world is drawn in world pixels: GUI pixels times the interface size factor, divided by
+// the world zoom
+int gui_map_x(int x)
+{
+	return (int)floorf((float)x * sdl_ui_scale / sdl_world_scale + 0.5f);
+}
+
+int gui_map_y(int y)
+{
+	return (int)floorf((float)y * sdl_ui_scale / sdl_world_scale + 0.5f);
+}
+
+// Screen position in world pixels to tile. Returns 0 if the position is not on the map.
+int stom(int scrx, int scry, int *mapx, int *mapy)
+{
+	float k = sdl_world_scale / sdl_ui_scale;
+
+	if (!gui_point_in_map((int)floorf((float)scrx * k), (int)floorf((float)scry * k))) {
+		return 0;
+	}
+
+	scrx -= stom_off_x;
+	scry -= stom_off_y;
+	scrx -= (mapoffx + mapaddx);
+	scry -= (mapoffy + mapaddy) - 10;
+	*mapy = (40 * scry - 20 * scrx - 1) / (20 * 40); // ??? -1 ???
+	*mapx = (40 * scry + 20 * scrx) / (20 * 40);
+
+	return 1;
+}
+
+DLL_EXPORT size_t get_near_ground(int x, int y)
+{
+	int mapx, mapy;
+	unsigned int ux, uy;
+
+	// mouse position (GUI pixels) to world pixels
+	x = gui_map_x(x);
+	y = gui_map_y(y);
+
+	if (!stom(x, y, &mapx, &mapy)) {
+		return MAXMN;
+	}
+
+	if (mapx < 0 || mapy < 0 || (unsigned int)mapx >= MAPDX || (unsigned int)mapy >= MAPDY) {
+		return MAXMN;
+	}
+
+	ux = (unsigned int)mapx;
+	uy = (unsigned int)mapy;
+	return mapmn(ux, uy);
+}
+
+// find the closest character or item (depending on flags)
+map_index_t get_near_ex(int x, int y, unsigned int flags, unsigned int looksize)
+{
+	int mapx, mapy, scrx, scry, found;
+	unsigned int ux, uy, sx, sy, ex, ey, mapx_u, mapy_u;
+	map_index_t mn, nearest = MAXMN;
+	double dist, nearestdist = 100000000;
+
+	// mouse position (GUI pixels) to world pixels
+	x = gui_map_x(x);
+	y = gui_map_y(y);
+
+	if (!stom(x, y, &mapx, &mapy)) {
+		return MAXMN;
+	}
+
+	if (mapx < 0 || mapy < 0 || mapx >= (int)MAPDX || mapy >= (int)MAPDY) {
+		return MAXMN;
+	}
+
+	ux = (unsigned int)mapx;
+	uy = (unsigned int)mapy;
+
+	sx = (ux > looksize) ? (ux - looksize) : 0U;
+	sy = (uy > looksize) ? (uy - looksize) : 0U;
+	ex = min(MAPDX - 1, ux + looksize);
+	ey = min(MAPDY - 1, uy + looksize);
+
+	for (mapy_u = sy; mapy_u <= ey; mapy_u++) {
+		for (mapx_u = sx; mapx_u <= ex; mapx_u++) {
+			mn = mapmn(mapx_u, mapy_u);
+			found = 0;
+
+			if (!(map[mn].rlight)) {
+				continue;
+			}
+
+			if ((flags & NEAR_ITEM) && (map[mn].flags & flags) && map[mn].isprite) {
+				found = 1;
+			}
+
+			if ((flags & NEAR_CHAR) && map[mn].csprite) {
+				if (!(flags & NEAR_NOTSELF) || mn != MAPDX * MAPDY / 2) {
+					found = 1;
+				}
+			}
+
+			if (!found) {
+				continue;
+			}
+
+			mtos(mapx_u, mapy_u, &scrx, &scry);
+
+			dist = (x - scrx) * (x - scrx) + (y - scry) * (y - scry);
+
+			if (dist < nearestdist) {
+				nearestdist = dist;
+				nearest = mn;
+			}
+		}
+	}
+
+	return nearest;
+}
+
+DLL_EXPORT map_index_t get_near_item(int x, int y, unsigned int flag, unsigned int looksize)
+{
+	return get_near_ex(x, y, flag | NEAR_ITEM, looksize);
+}
+
+DLL_EXPORT map_index_t get_near_char(int x, int y, unsigned int looksize)
+{
+	return get_near_ex(x, y, NEAR_CHAR | NEAR_NOTSELF, looksize);
+}

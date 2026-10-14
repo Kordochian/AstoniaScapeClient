@@ -1,0 +1,233 @@
+diff -ru base/src/astonia.h work/src/astonia.h
+--- base/src/astonia.h	2026-10-12 02:35:30.256564952 +0000
++++ work/src/astonia.h	2026-10-12 02:34:19.253405495 +0000
+@@ -47,16 +47,18 @@
+ 
+ extern DLL_EXPORT unsigned int _client_dist;
+ #define DIST    (_client_dist)
+-#define DISTMAX (40u)
++#define DISTMAX (64u) // protocol 4 servers send 64 tiles around the player, protocol 3 ones 40
+ #define FDX     40 // width of a map tile
+ #define FDY     20 // height of a map tile
+ 
+ #define XRES  (__xres) // width of the game area; follows the window (XRES0..XRESMAX)
+ #define YRES  (__yres)
+ #define XRES0 800 // width of the GUI (top bar, bottom window) and the minimum width
+-#define XRESMAX 1600 // the server sends 40 tiles around the player: 1600x800 pixels of map
++// The server sends DIST tiles around the player, a diamond that covers DIST*40 x DIST*20
++// pixels of screen. The game area may be a bit taller since the bottom window hides some.
++#define XRESMAX ((int)DIST * 40)
+ #define YRESMIN 450
+-#define YRESMAX 900
++#define YRESMAX ((int)DIST * 22)
+ #define YRES0 600 // 4:3 aspect ratio
+ #define YRES1 650 // Tall
+ #define YRES2 500 // 16:10 aspect ratio
+diff -ru base/src/client/client.c work/src/client/client.c
+--- base/src/client/client.c	2026-10-12 02:35:29.990220431 +0000
++++ work/src/client/client.c	2026-10-12 02:34:19.253830250 +0000
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+ 
+-#define CLIENT_PROTOCOL_VERSION 3
++#define CLIENT_PROTOCOL_VERSION 4 // 4: server sends DIST 64
+ 
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+diff -ru base/src/client/protocol.c work/src/client/protocol.c
+--- base/src/client/protocol.c	2026-10-12 02:35:29.990461040 +0000
++++ work/src/client/protocol.c	2026-10-12 02:34:19.254869548 +0000
+@@ -1017,7 +1017,12 @@
+ 
+ 	protocol_version = buf[1];
+ 
+-	if (protocol_version >= 3) {
++	if (protocol_version >= 4) {
++		if (_client_dist != 64) {
++			_client_dist = 64;
++			reset = 1;
++		}
++	} else if (protocol_version >= 3) {
+ 		if (_client_dist != 40) {
+ 			_client_dist = 40;
+ 			reset = 1;
+@@ -1032,6 +1037,8 @@
+ 		exit_game();
+ 		init_game(dotx(DOT_MCT), doty(DOT_MCT));
+ 		note("Astonia Protocol Version %d established, engine reset.", protocol_version);
++		// the view range limits the game area: fit it to the window again
++		sdl_refresh_layout();
+ 	}
+ }
+ 
+diff -ru base/src/gui/gui_core.c work/src/gui/gui_core.c
+--- base/src/gui/gui_core.c	2026-10-12 02:35:30.408399248 +0000
++++ work/src/gui/gui_core.c	2026-10-12 02:56:26.418923166 +0000
+@@ -300,6 +300,7 @@
+ 	if (!layout_ready) {
+ 		return;
+ 	}
++	render_clear_clip(); // the base clipping rectangle is the whole game area
+ 	init_dots();
+ 	exit_game();
+ 	init_game(dotx(DOT_MCT), doty(DOT_MCT));
+diff -ru base/src/gui/options.c work/src/gui/options.c
+--- base/src/gui/options.c	2026-10-12 02:35:29.987091858 +0000
++++ work/src/gui/options.c	2026-10-12 02:35:03.543587078 +0000
+@@ -24,13 +24,14 @@
+ 
+ // panel size and layout, in game coordinates
+ #define PW 300
+-#define PH 198
++#define PH 216
+ 
+ #define ROW_SFX   40
+ #define ROW_MUSIC 58
+ #define ROW_MODE  104
+ #define ROW_RES   122
+-#define ROW_NOTE  146
++#define ROW_ZOOM  140
++#define ROW_NOTE  164
+ 
+ #define CTRL_X 112 // left edge of the sliders and selectors
+ #define SLD_W  130 // slider width
+@@ -48,6 +49,8 @@
+ 	H_MODE_R,
+ 	H_RES_L,
+ 	H_RES_R,
++	H_ZOOM_L,
++	H_ZOOM_R,
+ 	H_APPLY,
+ 	H_DONE,
+ };
+@@ -72,6 +75,7 @@
+ 
+ static const char *mode_name[] = {"Windowed", "Windowed fullscreen", "Fullscreen"};
+ static const char *mode_key[] = {"windowed", "borderless", "fullscreen"};
++static const char *zoom_name[] = {"Auto (largest)", "1x (see the most)", "2x", "3x", "4x"};
+ 
+ static void current_selection(void);
+ 
+@@ -148,6 +152,8 @@
+ 			w = atoi(val);
+ 		} else if (!strcmp(line, "height")) {
+ 			h = atoi(val);
++		} else if (!strcmp(line, "zoom")) {
++			sdl_zoom = clampi(atoi(val), 0, 4);
+ 		}
+ 	}
+ 	fclose(fp);
+@@ -188,6 +194,7 @@
+ 	fprintf(fp, "# Astonia client settings, changed with the in-game Options menu\n");
+ 	fprintf(fp, "sfx_volume=%d\n", sfx_percent());
+ 	fprintf(fp, "music_volume=%d\n", music_volume);
++	fprintf(fp, "zoom=%d\n", sdl_zoom);
+ 	if (have_gfx) {
+ 		fprintf(fp, "display_mode=%s\n", mode_key[clampi(cfg_mode, 0, 2)]);
+ 		if (cfg_mode != DISPMODE_BORDERLESS) {
+@@ -355,6 +362,12 @@
+ 	if (in_box(x, y, cx + SEL_W - 14, py + ROW_MODE - 2, cx + SEL_W, py + ROW_MODE + 11)) {
+ 		return H_MODE_R;
+ 	}
++	if (in_box(x, y, cx, py + ROW_ZOOM - 2, cx + 14, py + ROW_ZOOM + 11)) {
++		return H_ZOOM_L;
++	}
++	if (in_box(x, y, cx + SEL_W - 14, py + ROW_ZOOM - 2, cx + SEL_W, py + ROW_ZOOM + 11)) {
++		return H_ZOOM_R;
++	}
+ 	if (sel_mode != DISPMODE_BORDERLESS) {
+ 		if (in_box(x, y, cx, py + ROW_RES - 2, cx + 14, py + ROW_RES + 11)) {
+ 			return H_RES_L;
+@@ -437,6 +450,12 @@
+ 			sel_res++;
+ 		}
+ 		break;
++	case H_ZOOM_L:
++	case H_ZOOM_R:
++		// graphics scale is picked at start, so this is saved now and used next start
++		sdl_zoom = (sdl_zoom + (what == H_ZOOM_L ? 4 : 1)) % 5;
++		options_save();
++		break;
+ 	case H_APPLY:
+ 		apply_graphics();
+ 		break;
+@@ -657,6 +676,8 @@
+ 		    hov == H_RES_R);
+ 	}
+ 
++	draw_selector(ROW_ZOOM, "Zoom", zoom_name[clampi(sdl_zoom, 0, 4)], 1, hov == H_ZOOM_L, hov == H_ZOOM_R);
++
+ 	// note
+ 	best = sdl_best_scale();
+ 	if (pending) {
+@@ -664,7 +685,7 @@
+ 		    px + 16, py + ROW_NOTE, lightgraycolor, RENDER_TEXT_SMALL, "Press Apply to use the new display settings.");
+ 	} else if (best != sdl_scale) {
+ 		render_text(px + 16, py + ROW_NOTE, IRGB(31, 24, 10), RENDER_TEXT_SMALL,
+-		    "Restart the client to fit the graphics to this size.");
++		    "Restart the client to use the new zoom / graphics size.");
+ 	} else if (sdl_display_mode == DISPMODE_WINDOWED) {
+ 		render_text(px + 16, py + ROW_NOTE, lightgraycolor, RENDER_TEXT_SMALL, "Drag the window's edges to resize it.");
+ 	}
+diff -ru base/src/sdl/sdl.h work/src/sdl/sdl.h
+--- base/src/sdl/sdl.h	2026-10-12 02:35:30.479296023 +0000
++++ work/src/sdl/sdl.h	2026-10-12 02:34:36.809793575 +0000
+@@ -62,6 +62,8 @@
+ void sdl_get_mode_size(int *w, int *h);
+ int sdl_scale_for_size(int width, int height);
+ int sdl_set_game_size(int w, int h);
++void sdl_refresh_layout(void);
++extern int sdl_zoom;
+ int sdl_best_scale(void);
+ 
+ void sdl_set_cursor(int cursor);
+diff -ru base/src/sdl/sdl_core.c work/src/sdl/sdl_core.c
+--- base/src/sdl/sdl_core.c	2026-10-12 02:35:30.480480775 +0000
++++ work/src/sdl/sdl_core.c	2026-10-12 02:34:44.417353534 +0000
+@@ -55,6 +55,10 @@
+ DLL_EXPORT int __yres = YRES0;
+ DLL_EXPORT int gui_dx = 0;
+ 
++// Zoom chosen in the Options window: 0 = automatic (largest graphics that fit), 1-4 = at
++// most this graphics scale. Smaller graphics show more of the world.
++int sdl_zoom = 0;
++
+ // Display mode (DISPMODE_*). -1 means "decide from -w/-h/-o" as older clients did.
+ int sdl_display_mode = -1;
+ 
+@@ -317,6 +321,9 @@
+ 	// game area as large as the screen at that scale (up to XRESMAX x YRESMAX). The GUI keeps
+ 	// its size and the map shows more of the world.
+ 	sdl_scale = sdl_scale_for_size(width, height);
++	if (sdl_zoom >= 1 && sdl_zoom < sdl_scale) {
++		sdl_scale = sdl_zoom;
++	}
+ 	sdl_set_game_size(width / sdl_scale, height / sdl_scale);
+ 
+ 	if (game_options & GO_NOTSET) {
+@@ -770,12 +777,22 @@
+ // Scale the client would pick for the current window size after a restart
+ int sdl_best_scale(void)
+ {
+-	int w = 0, h = 0;
++	int w = 0, h = 0, scale;
+ 
+ 	if (!sdlren || !SDL_GetRenderOutputSize(sdlren, &w, &h) || w <= 0 || h <= 0) {
+ 		return sdl_scale;
+ 	}
+-	return sdl_scale_for_size(w, h);
++	scale = sdl_scale_for_size(w, h);
++	if (sdl_zoom >= 1 && sdl_zoom < scale) {
++		scale = sdl_zoom;
++	}
++	return scale;
++}
++
++// The game area limits changed (view range from the server): fit it to the window again
++void sdl_refresh_layout(void)
++{
++	sdl_update_presentation();
+ }
+ 
+ // Set the size of the game area (XRES x YRES), clamped to what the GUI needs and what the

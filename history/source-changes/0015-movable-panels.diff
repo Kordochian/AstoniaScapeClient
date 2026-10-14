@@ -1,0 +1,1011 @@
+diff -ruN pre2/src/client/protocol.c work/src/client/protocol.c
+--- a/src/client/protocol.c	2026-10-12 17:29:47.089590418 +0000
++++ b/src/client/protocol.c	2026-10-12 17:27:03.799531499 +0000
+@@ -1035,7 +1035,7 @@
+ 	}
+ 	if (reset) {
+ 		exit_game();
+-		init_game(dotx(DOT_MCT), doty(DOT_MCT));
++		init_game(gui_map_x(dotx(DOT_MCT)), gui_map_y(doty(DOT_MCT)));
+ 		note("Astonia Protocol Version %d established, engine reset.", protocol_version);
+ 		// the view range limits the game area: fit it to the window again
+ 		sdl_refresh_layout();
+diff -ruN pre2/src/gui/display.c work/src/gui/display.c
+--- a/src/gui/display.c	2026-10-12 17:29:47.086379103 +0000
++++ b/src/gui/display.c	2026-10-12 17:29:25.508333400 +0000
+@@ -661,7 +661,8 @@
+ 		}
+ 
+ 		render_text(
+-		    dotx(DOT_BOT) + x, doty(DOT_BOT) - 6, col, RENDER_TEXT_LEFT | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, buf);
++		    dotx(DOT_BOT) + x, doty(DOT_BOT) - PANEL_TITLE - 6, col, RENDER_TEXT_LEFT | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
++		    buf);
+ 	}
+ }
+ 
+@@ -736,7 +737,8 @@
+ 	int h1, h2, m1, m2;
+ 	static int rh1 = 0, rh2 = 0, rm1 = 0, rm2 = 0;
+ 
+-	render_sprite(opt_sprite(999), dotx(DOT_TOP), doty(DOT_TOP), RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
++	// the top bar and bottom window pictures, cut into panels
++	panels_display();
+ 
+ 	trans_date((int)realtime, &h, &m);
+ 
+@@ -783,12 +785,6 @@
+ 	    RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+ 
+ 	sprintf(hover_time_text, "%02d:%02d Astonia Standard Time", h, m);
+-
+-	if (game_options & GO_SMALLBOT) {
+-		render_sprite(opt_sprite(991), dotx(DOT_BOT), doty(DOT_BOT), RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+-	} else {
+-		render_sprite(opt_sprite(998), dotx(DOT_BOT), doty(DOT_BOT), RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+-	}
+ }
+ 
+ void display_text(void)
+@@ -942,8 +938,8 @@
+ 		}
+ 
+ 		render_push_clip();
+-		render_more_clip(0, 0, dotx(DOT_TOP) + 31 + 100 - (int)(100ll * step / total), doty(DOT_TOP) + 8 + 7);
+-		render_sprite(996, dotx(DOT_TOP) + 31, doty(DOT_TOP) + 7, exp_ticker ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
++		render_more_clip(0, 0, dots_level_x() + 31 + 100 - (int)(100ll * step / total), dots_level_y() + 8 + 7);
++		render_sprite(996, dots_level_x() + 31, dots_level_y() + 7, exp_ticker ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
+ 		    RENDER_ALIGN_NORMAL);
+ 		render_pop_clip();
+ 
+@@ -1020,8 +1016,8 @@
+ 	if (mil_exp && total) {
+ 		if (rank < *game_rankcount - 1) {
+ 			render_push_clip();
+-			render_more_clip(0, 0, dotx(DOT_TOP) + 31 + 100 * step / total, doty(DOT_TOP) + 8 + 24);
+-			render_sprite(993, dotx(DOT_TOP) + 31, doty(DOT_TOP) + 24, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
++			render_more_clip(0, 0, dots_level_x() + 31 + 100 * step / total, dots_level_y() + 8 + 24);
++			render_sprite(993, dots_level_x() + 31, dots_level_y() + 24, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+ 			render_pop_clip();
+ 
+ 			sprintf(hover_rank_text, "Rank: '%s' to '%s'", game_rankname[rank], game_rankname[rank + 1]);
+diff -ruN pre2/src/gui/dots.c work/src/gui/dots.c
+--- a/src/gui/dots.c	2026-10-12 17:29:47.086349767 +0000
++++ b/src/gui/dots.c	2026-10-12 17:29:25.508657422 +0000
+@@ -74,42 +74,104 @@
+ 	return but[bidx].y;
+ }
+ 
+-#define stop (game_options & GO_SMALLTOP)
++// The top bar no longer slides out of the way (GO_SMALLTOP): its pieces are panels the
++// player can move instead.
++#define stop 0
+ #define sbot (game_options & GO_SMALLBOT)
+ 
+ void dots_update(void)
+ {
+-	set_dot(DOT_TUT, (XRES - 410) / 2, doty(DOT_MBR) - 100 - (context_action_enabled() ? 30 : 0), 0);
++	set_dot(DOT_TUT, (XRES - 410) / 2, panels_bottom_row_y() - 100 - (context_action_enabled() ? 30 : 0), 0);
++}
++
++// Which panel each dot and button inside the top bar and bottom window belongs to
++static const struct {
++	int idx, pnl;
++} dot_panel[] = {
++    {DOT_TOP, PNL_MENU},
++    {DOT_WEA, PNL_EQUIPMENT},
++    {DOT_BOT, PNL_CHAT},
++    {DOT_BO2, PNL_INVENTORY},
++    {DOT_INV, PNL_INVENTORY},
++    {DOT_IN1, PNL_INVENTORY},
++    {DOT_IN2, PNL_INVENTORY},
++    {DOT_SCR, PNL_INVENTORY},
++    {DOT_CON, PNL_SKILLS},
++    {DOT_SCL, PNL_SKILLS},
++    {DOT_SCU, PNL_SKILLS},
++    {DOT_SCD, PNL_SKILLS},
++    {DOT_SKL, PNL_SKILLS},
++    {DOT_SK2, PNL_SKILLS},
++    {DOT_SSP, PNL_STATUS},
++    {DOT_GLD, PNL_STATUS},
++    {DOT_MOD, PNL_STATUS},
++    {DOT_TXT, PNL_CHAT},
++    {DOT_TX2, PNL_CHAT},
++    {DOT_JNK, PNL_CHAT},
++};
++
++static int but_panel(int b)
++{
++	if (b >= BUT_WEA_BEG && b <= BUT_WEA_END) {
++		return PNL_EQUIPMENT;
++	}
++	if ((b >= BUT_INV_BEG && b <= BUT_INV_END) || (b >= BUT_SCR_UP && b <= BUT_SCR_DW)) {
++		return PNL_INVENTORY;
++	}
++	if ((b >= BUT_CON_BEG && b <= BUT_CON_END) || (b >= BUT_SKL_BEG && b <= BUT_SKL_END) ||
++	    (b >= BUT_SCL_UP && b <= BUT_SCL_DW)) {
++		return PNL_SKILLS;
++	}
++	if (b == BUT_GLD || (b >= BUT_MOD_WALK0 && b <= BUT_MOD_WALK2)) {
++		return PNL_STATUS;
++	}
++	if (b == BUT_JNK) {
++		return PNL_CHAT;
++	}
++	if (b == BUT_WEA_LCK) {
++		return PNL_MENU;
++	}
++	return -1;
++}
++
++// Origin of the original top bar picture as seen from the level panel. The level and
++// rank bars are drawn relative to this.
++int dots_level_x(void)
++{
++	return pnl_dx(PNL_LEVEL);
++}
++
++int dots_level_y(void)
++{
++	return pnl_dy(PNL_LEVEL);
+ }
+ 
+ void init_dots(void)
+ {
+-	int i, x, y, xc, yc;
+-	// The top bar and the bottom window are 800 pixels wide pictures. They stay that size,
+-	// centered; the map fills the whole game area behind them.
+-	int gx = gui_dx;
++	int i, x, y, xc, yc, gx = gui_dx;
++
++	panels_layout();
+ 
+ 	// top left, bottom right of screen
+ 	set_dot(DOT_TL, 0, 0, 0);
+ 	set_dot(DOT_BR, XRES, YRES, 0);
+ 
++	// Everything in the top bar and the bottom window is first laid out inside the original
++	// 800 pixel pictures (each picture's top left at 0,0), then moved with its panel.
++
+ 	// top and bottom window
+-	set_dot(DOT_TOP, gx, 0, !stop ? 0 : DOTF_TOPOFF);
+-	if (!sbot) {
+-		set_dot(DOT_BOT, gx, YRES - 170, 0);
+-	} else {
+-		set_dot(DOT_BOT, gx, YRES - 130, 0);
+-	}
+-	set_dot(DOT_BO2, gx + XRES0, YRES, 0);
++	set_dot(DOT_TOP, 0, 0, 0);
++	set_dot(DOT_BOT, 0, 0, 0);
++	set_dot(DOT_BO2, XRES0, !sbot ? 170 : 130, 0);
+ 
+ 	// equipment, inventory, container. center of first displayed item.
+-	set_dot(DOT_WEA, gx + 180, 20, !stop ? 0 : DOTF_TOPOFF);
+-	set_dot(DOT_INV, gx + 660, doty(DOT_BOT) + 27, 0);
+-	set_dot(DOT_CON, gx + 20, doty(DOT_BOT) + 27, 0);
++	set_dot(DOT_WEA, 180, 20, 0);
++	set_dot(DOT_INV, 660, doty(DOT_BOT) + 27, 0);
++	set_dot(DOT_CON, 20, doty(DOT_BOT) + 27, 0);
+ 
+ 	// inventory top left and bottom right
+-	set_dot(DOT_IN1, gx + 645, doty(DOT_BOT) + 2, 0);
+-	set_dot(DOT_IN2, gx + 795, doty(DOT_BO2) - 2, 0);
++	set_dot(DOT_IN1, 645, doty(DOT_BOT) + 2, 0);
++	set_dot(DOT_IN2, 795, doty(DOT_BO2) - 2, 0);
+ 	if (!sbot) {
+ 		__invdy = 4;
+ 	} else {
+@@ -117,8 +179,8 @@
+ 	}
+ 
+ 	// scroll bars
+-	set_dot(DOT_SCL, gx + 160 + 5, 0, 0);
+-	set_dot(DOT_SCR, gx + XRES0 - 160 - 5, 0, 0);
++	set_dot(DOT_SCL, 160 + 5, 0, 0);
++	set_dot(DOT_SCR, XRES0 - 160 - 5, 0, 0);
+ 	set_dot(DOT_SCU, 0, doty(DOT_BOT) + 15, 0);
+ 	if (!sbot) {
+ 		set_dot(DOT_SCD, 0, doty(DOT_BOT) + 160, 0);
+@@ -134,18 +196,18 @@
+ 	}
+ 
+ 	// chat text
+-	set_dot(DOT_TXT, gx + 230, doty(DOT_BOT) + 8, 0);
++	set_dot(DOT_TXT, 230, doty(DOT_BOT) + 8, 0);
+ 	if (!sbot) {
+-		set_dot(DOT_TX2, gx + 624, doty(DOT_BOT) + 158, 0);
++		set_dot(DOT_TX2, 624, doty(DOT_BOT) + 158, 0);
+ 		__textdisplay_sy = 150;
+ 	} else {
+-		set_dot(DOT_TX2, gx + 624, doty(DOT_BOT) + 118, 0);
++		set_dot(DOT_TX2, 624, doty(DOT_BOT) + 118, 0);
+ 		__textdisplay_sy = 110;
+ 	}
+ 
+ 	// skill list
+-	set_dot(DOT_SKL, gx + 8, doty(DOT_BOT) + 12, 0);
+-	set_dot(DOT_SK2, gx + 156, doty(DOT_BO2) - 2, 0);
++	set_dot(DOT_SKL, 8, doty(DOT_BOT) + 12, 0);
++	set_dot(DOT_SK2, 156, doty(DOT_BO2) - 2, 0);
+ 	if (!sbot) {
+ 		__skldy = 16;
+ 	} else {
+@@ -153,17 +215,69 @@
+ 	}
+ 
+ 	// gold
+-	set_dot(DOT_GLD, gx + 195, doty(DOT_BO2) - 22, 0);
++	set_dot(DOT_GLD, 195, doty(DOT_BO2) - 22, 0);
+ 
+ 	// trashcan
+-	set_dot(DOT_JNK, gx + 610, doty(DOT_BO2) - 22, 0);
++	set_dot(DOT_JNK, 610, doty(DOT_BO2) - 22, 0);
+ 
+ 	// speed options: stealth/normal/fast
+-	set_dot(DOT_MOD, gx + 181, doty(DOT_BOT) + 24, 0);
++	set_dot(DOT_MOD, 181, doty(DOT_BOT) + 24, 0);
++
++	// note to self: do not use dotx(),doty() here because the moving top bar logic is built into the
++	// button flags as well
++	for (i = 0; i < 12; i++) {
++		set_but(BUT_WEA_BEG + i, dot[DOT_WEA].x + i * FDX, dot[DOT_WEA].y + 0, 40, 0);
++	}
++	for (x = 0; x < 4; x++) {
++		for (y = 0; y < 4; y++) {
++			set_but(BUT_INV_BEG + x + y * 4, dot[DOT_INV].x + x * FDX, dot[DOT_INV].y + y * FDX, 40, 0);
++		}
++	}
++	for (x = 0; x < 4; x++) {
++		for (y = 0; y < 4; y++) {
++			set_but(BUT_CON_BEG + x + y * 4, dot[DOT_CON].x + x * FDX, dot[DOT_CON].y + y * FDX, 40, 0);
++		}
++	}
++	for (i = 0; i < 16; i++) {
++		set_but(BUT_SKL_BEG + i, dot[DOT_SKL].x, dot[DOT_SKL].y + i * LINEHEIGHT, 10, 0);
++	}
++
++	set_but(BUT_WEA_LCK, dot[DOT_WEA].x + 12 * FDX - 12, dot[DOT_WEA].y + 7, 18, 0);
++
++	set_but(BUT_SCL_UP, dot[DOT_SCL].x + 0, dot[DOT_SCU].y + 0, 30, 0);
++	set_but(BUT_SCL_TR, dot[DOT_SCL].x + 0, dot[DOT_SCU].y + 10, 40, BUTF_CAPTURE | BUTF_MOVEEXEC);
++	set_but(BUT_SCL_DW, dot[DOT_SCL].x + 0, dot[DOT_SCD].y + 0, 30, 0);
++
++	set_but(BUT_SCR_UP, dot[DOT_SCR].x + 0, dot[DOT_SCU].y + 0, 30, 0);
++	set_but(BUT_SCR_TR, dot[DOT_SCR].x + 0, dot[DOT_SCU].y + 10, 40, BUTF_CAPTURE | BUTF_MOVEEXEC);
++	set_but(BUT_SCR_DW, dot[DOT_SCR].x + 0, dot[DOT_SCD].y + 0, 30, 0);
++
++	set_but(BUT_GLD, dot[DOT_GLD].x + 0, dot[DOT_GLD].y + 10, 30, BUTF_CAPTURE);
++
++	set_but(BUT_JNK, dot[DOT_JNK].x + 0, dot[DOT_JNK].y + 0, 30, 0);
++
++	set_but(BUT_MOD_WALK0, dot[DOT_MOD].x + 1 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
++	set_but(BUT_MOD_WALK1, dot[DOT_MOD].x + 0 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
++	set_but(BUT_MOD_WALK2, dot[DOT_MOD].x + 2 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
++
++	// move everything to its panel. The bottom window's pieces use the bottom panels' offsets,
++	// the top bar's the top panels'.
++	for (i = 0; i < (int)(sizeof(dot_panel) / sizeof(dot_panel[0])); i++) {
++		dot[dot_panel[i].idx].x += pnl_dx(dot_panel[i].pnl);
++		dot[dot_panel[i].idx].y += pnl_dy(dot_panel[i].pnl);
++	}
++	for (i = 0; i < MAX_BUT; i++) {
++		int p = but_panel(i);
++		if (p != -1) {
++			but[i].x += pnl_dx(p);
++			but[i].y += pnl_dy(p);
++		}
++	}
+ 
+-	// map top left, bottom right, center
+-	set_dot(DOT_MTL, 0, 40, !stop ? 0 : DOTF_TOPOFF);
+-	set_dot(DOT_MBR, XRES, doty(DOT_BOT) + 4, 0);
++	// map top left, bottom right, center: the space between the default top and bottom rows.
++	// The map is drawn on the whole screen; this is where the player stands.
++	set_dot(DOT_MTL, 0, panels_top_row_h(), 0);
++	set_dot(DOT_MBR, XRES, panels_bottom_row_y() + 4, 0);
+ 	x = dotx(DOT_MBR) - dotx(DOT_MTL);
+ 	y = doty(DOT_MBR) - doty(DOT_MTL) + (!stop ? 0 : 40);
+ 	xc = x / 2;
+@@ -175,75 +289,34 @@
+ 		yc = y / 2;
+ 	}
+ 	set_dot(DOT_MCT, dotx(DOT_MTL) + xc, doty(DOT_MTL) - (!stop ? 0 : 40) + yc, 0);
+-	// note("map: %dx%d, center: %d,%d, origin: %d,%d,
+-	// (%d,%d)",x,y,dotx(DOT_MCT),doty(DOT_MCT),dotx(DOT_MTL),doty(DOT_MTL),dotx(DOT_MBR),doty(DOT_MBR));
+ 
+ 	// help and quest window
+-	set_dot(DOT_HLP, 0, !stop ? 40 : 0, 0);
+-	set_dot(DOT_HL2, 222, (!stop ? 40 : 0) + 394, 0);
++	set_dot(DOT_HLP, 0, panels_top_row_h(), 0);
++	set_dot(DOT_HL2, 222, panels_top_row_h() + 394, 0);
+ 
+ 	// teleporter window
+ 	set_dot(DOT_TEL, (XRES - 520) / 2, (doty(DOT_MBR) - doty(DOT_MTL) - 320 - (!stop ? 0 : 40)) / 2 + doty(DOT_MTL), 0);
+ 
+ 	// look at window
+-	set_dot(DOT_LOK, gx + 150, 50, 0);
++	set_dot(DOT_LOK, gx + 150, panels_top_row_h() + 10, 0);
+ 
+ 	// color picker window
+ 	set_dot(DOT_COL, gx + 340, 210, 0);
+ 
+ 	// action bar
+-	set_dot(DOT_ACT, XRES - MAXACTIONSLOT * 40 - (XRES - MAXACTIONSLOT * 40) / 2, doty(DOT_BOT) - 12, 0);
++	set_dot(DOT_ACT, XRES - MAXACTIONSLOT * 40 - (XRES - MAXACTIONSLOT * 40) / 2, panels_bottom_row_y() - 12, 0);
+ 
+ 	// tutor window
+ 	dots_update();
+ 
+ 	set_but(BUT_MAP, XRES / 2, YRES / 2, 0, BUTF_NOHIT);
+ 
+-	// note to self: do not use dotx(),doty() here because the moving top bar logic is built into the
+-	// button flags as well
+-	for (i = 0; i < 12; i++) {
+-		set_but(BUT_WEA_BEG + i, dot[DOT_WEA].x + i * FDX, dot[DOT_WEA].y + 0, 40, !stop ? 0 : BUTF_TOPOFF);
+-	}
+-	for (x = 0; x < 4; x++) {
+-		for (y = 0; y < 4; y++) {
+-			set_but(BUT_INV_BEG + x + y * 4, dot[DOT_INV].x + x * FDX, dot[DOT_INV].y + y * FDX, 40, 0);
+-		}
+-	}
+-	for (x = 0; x < 4; x++) {
+-		for (y = 0; y < 4; y++) {
+-			set_but(BUT_CON_BEG + x + y * 4, dot[DOT_CON].x + x * FDX, dot[DOT_CON].y + y * FDX, 40, 0);
+-		}
+-	}
+-	for (i = 0; i < 16; i++) {
+-		set_but(BUT_SKL_BEG + i, dot[DOT_SKL].x, dot[DOT_SKL].y + i * LINEHEIGHT, 10, 0);
+-	}
+ 	for (i = 0; i < MAXACTIONSLOT; i++) {
+ 		set_but(BUT_ACT_BEG + i, dot[DOT_ACT].x + i * 40, dot[DOT_ACT].y, 18, 0);
+ 	}
+-
+-	set_but(BUT_WEA_LCK, dot[DOT_WEA].x + 12 * FDX - 12, dot[DOT_WEA].y + 7, 18, !stop ? 0 : BUTF_TOPOFF);
+ 	set_but(BUT_ACT_LCK, dot[DOT_ACT].x - 40, dot[DOT_ACT].y, 18, 0);
+ 	set_but(BUT_ACT_OPN, dot[DOT_ACT].x + MAXACTIONSLOT * 40, dot[DOT_ACT].y, 18, 0);
+ 
+-	set_but(BUT_SCL_UP, dot[DOT_SCL].x + 0, dot[DOT_SCU].y + 0, 30, 0);
+-	set_but(BUT_SCL_TR, dot[DOT_SCL].x + 0, dot[DOT_SCU].y + 10, 40, BUTF_CAPTURE | BUTF_MOVEEXEC);
+-	set_but(BUT_SCL_DW, dot[DOT_SCL].x + 0, dot[DOT_SCD].y + 0, 30, 0);
+-
+-	set_but(BUT_SCR_UP, dot[DOT_SCR].x + 0, dot[DOT_SCU].y + 0, 30, 0);
+-	set_but(BUT_SCR_TR, dot[DOT_SCR].x + 0, dot[DOT_SCU].y + 10, 40, BUTF_CAPTURE | BUTF_MOVEEXEC);
+-	set_but(BUT_SCR_DW, dot[DOT_SCR].x + 0, dot[DOT_SCD].y + 0, 30, 0);
+-
+-	if (!stop) {
+-		set_but(BUT_GLD, dot[DOT_GLD].x + 0, dot[DOT_GLD].y + 10, 30, BUTF_CAPTURE);
+-	} else {
+-		set_but(BUT_GLD, dot[DOT_GLD].x + 0, dot[DOT_GLD].y + 10, 15, BUTF_CAPTURE);
+-	}
+-
+-	set_but(BUT_JNK, dot[DOT_JNK].x + 0, dot[DOT_JNK].y + 0, 30, 0);
+-
+-	set_but(BUT_MOD_WALK0, dot[DOT_MOD].x + 1 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
+-	set_but(BUT_MOD_WALK1, dot[DOT_MOD].x + 0 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
+-	set_but(BUT_MOD_WALK2, dot[DOT_MOD].x + 2 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
+ 	set_but(BUT_HELP_DRAG, (dotx(DOT_HLP) + dotx(DOT_HL2)) / 2, doty(DOT_HLP) + 6, 0, BUTF_CAPTURE | BUTF_MOVEEXEC);
+ 	set_but(BUT_OPTIONS, 0, 0, 0, BUTF_NOHIT); // hit test in detect_hover_target()
+ }
+diff -ruN pre2/src/gui/gui_core.c work/src/gui/gui_core.c
+--- a/src/gui/gui_core.c	2026-10-12 17:29:48.026442389 +0000
++++ b/src/gui/gui_core.c	2026-10-12 17:27:57.695686738 +0000
+@@ -302,6 +302,9 @@
+ 	}
+ 	render_clear_clip(); // the base clipping rectangle is the whole game area
+ 	init_dots();
++	set_invoff(0, invoff);
++	set_skloff(0, skloff);
++	set_conoff(0, conoff);
+ 	exit_game();
+ 	init_game(gui_map_x(dotx(DOT_MCT)), gui_map_y(doty(DOT_MCT)));
+ 	minimap_layout();
+diff -ruN pre2/src/gui/gui_display.c work/src/gui/gui_display.c
+--- a/src/gui/gui_display.c	2026-10-12 17:29:48.182442386 +0000
++++ b/src/gui/gui_display.c	2026-10-12 17:27:03.798878152 +0000
+@@ -295,8 +295,7 @@
+ 		goto display_graphs; // I know, I know. goto considered harmful and all that.
+ 	}
+ 
+-	// The map fills the whole game area; the top bar and bottom window are drawn over it.
+-	// Inside the 800 pixel GUI column the map stops at the bars as it always did.
++	// The map fills the whole game area; the interface panels are drawn over it.
+ 	// The world is drawn in map pixels, which differ from GUI pixels by the interface size.
+ 	sdl_map_pass();
+ 	render_push_clip();
+@@ -306,11 +305,6 @@
+ 	smoothcam_end();
+ 	render_pop_clip();
+ 	sdl_gui_pass();
+-	if (doty(DOT_MTL) > 0) {
+-		render_rect(gui_dx, 0, gui_dx + XRES0, doty(DOT_MTL), blackcolor);
+-	}
+-	// one extra line covers the rounding between map and GUI pixels
+-	render_rect(gui_dx, doty(DOT_MBR), gui_dx + XRES0, YRES + 1, blackcolor);
+ 	display_game_overlay();
+ 
+ 	display_screen();
+diff -ruN pre2/src/gui/gui_input.c work/src/gui/gui_input.c
+--- a/src/gui/gui_input.c	2026-10-12 17:29:48.342442382 +0000
++++ b/src/gui/gui_input.c	2026-10-12 17:27:19.744318233 +0000
+@@ -320,6 +320,14 @@
+ 		return;
+ 	}
+ 
++	// interface panels are dragged by their title strip
++	if (what != SDL_MOUM_NONE && panels_mouse(what, mousex, mousey)) {
++		if (what == SDL_MOUM_LUP) {
++			vk_lbut = 0;
++		}
++		return;
++	}
++
+ 	switch (what) {
+ 	case SDL_MOUM_NONE:
+ 		mousex = local_x;
+@@ -339,6 +347,10 @@
+ 		mousex -= render_offset_x();
+ 		mousey -= render_offset_y();
+ 
++		if (panels_mouse(SDL_MOUM_NONE, mousex, mousey)) {
++			break;
++		}
++
+ 		options_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 		questwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 
+diff -ruN pre2/src/gui/gui_map.c work/src/gui/gui_map.c
+--- a/src/gui/gui_map.c	2026-10-12 17:29:48.494442378 +0000
++++ b/src/gui/gui_map.c	2026-10-12 17:27:03.799144088 +0000
+@@ -36,18 +36,13 @@
+ 	*scry = (mapoffy + mapaddy) + ((int)mapx + (int)mapy) * (FDY / 2);
+ }
+ 
+-// Is this screen position on the map? That is the map area between the top bar and the
+-// bottom window, plus the strips left and right of them when the game area is wider than
+-// the 800 pixel GUI.
++// Is this screen position on the map? That is anywhere not covered by an interface panel.
+ int gui_point_in_map(int x, int y)
+ {
+ 	if (x < 0 || y < 0 || x >= XRES || y >= YRES) {
+ 		return 0;
+ 	}
+-	if (x >= dotx(DOT_MTL) && x < dotx(DOT_MBR) && y >= doty(DOT_MTL) && y < doty(DOT_MBR)) {
+-		return 1;
+-	}
+-	return x < gui_dx || x >= gui_dx + XRES0;
++	return pnl_at(x, y) == -1;
+ }
+ 
+ // The world is drawn in map pixels: GUI pixels times the interface size factor
+diff -ruN pre2/src/gui/gui_private.h work/src/gui/gui_private.h
+--- a/src/gui/gui_private.h	2026-10-12 17:29:47.087108375 +0000
++++ b/src/gui/gui_private.h	2026-10-12 17:29:25.507918085 +0000
+@@ -491,6 +491,34 @@
+ void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border);
+ void gui_draw_panel(int x, int y, int w, int h, int title_h);
+ 
++// From panels.c: the top bar and bottom window cut into movable panels
++#define PANEL_TITLE   12 // title strip height, used for dragging
++#define PNL_LEVEL     0
++#define PNL_EQUIPMENT 1
++#define PNL_MENU      2
++#define PNL_SKILLS    3
++#define PNL_STATUS    4
++#define PNL_CHAT      5
++#define PNL_INVENTORY 6
++#define MAX_PANEL     7
++extern int panels_locked;
++void panels_layout(void);
++void panels_display(void);
++int panels_mouse(int what, int x, int y);
++int panels_dragging(void);
++void panels_reset(void);
++int panels_load_setting(const char *key, const char *val);
++void panels_save_settings(void *fp); // FILE *
++int panels_top_row_h(void);
++int panels_bottom_row_y(void);
++int pnl_at(int x, int y);
++int pnl_x(int p);
++int pnl_y(int p);
++int pnl_w(int p);
++int pnl_h(int p);
++int pnl_dx(int p);
++int pnl_dy(int p);
++
+ void display_action(void);
+ void display_selfbars(void);
+ 
+@@ -550,6 +578,8 @@
+ void minimap_update(void);
+ void minimap_display_hover(int x, int y);
+ void dots_update(void);
++int dots_level_x(void);
++int dots_level_y(void);
+ void display_action_lock(void);
+ void display_action_open(void);
+ void display_wear_lock(void);
+diff -ruN pre2/src/gui/hover.c work/src/gui/hover.c
+--- a/src/gui/hover.c	2026-10-12 17:29:47.087407297 +0000
++++ b/src/gui/hover.c	2026-10-12 17:27:03.797951292 +0000
+@@ -73,11 +73,11 @@
+ 		}
+ 	}
+ 
+-	if (mousex >= dotx(DOT_BOT) + 25 && mousex <= dotx(DOT_BOT) + 135) {
+-		if (mousey >= doty(DOT_TOP) + 5 && mousey <= doty(DOT_TOP) + 13) {
++	if (mousex >= dots_level_x() + 25 && mousex <= dots_level_x() + 135) {
++		if (mousey >= dots_level_y() + 5 && mousey <= dots_level_y() + 13) {
+ 			render_text_nl(mousex + 16, mousey - 4, 0xffff, RENDER_TEXT_BIG | RENDER_TEXT_FRAMED, hover_level_text);
+ 		}
+-		if (mousey >= doty(DOT_TOP) + 22 && mousey <= doty(DOT_TOP) + 30) {
++		if (mousey >= dots_level_y() + 22 && mousey <= dots_level_y() + 30) {
+ 			render_text_nl(mousex + 16, mousey - 4, 0xffff, RENDER_TEXT_BIG | RENDER_TEXT_FRAMED, hover_rank_text);
+ 		}
+ 	}
+diff -ruN pre2/src/gui/options.c work/src/gui/options.c
+--- a/src/gui/options.c	2026-10-12 17:29:48.594442376 +0000
++++ b/src/gui/options.c	2026-10-12 17:27:44.029674693 +0000
+@@ -24,7 +24,7 @@
+ 
+ // panel size and layout, in game coordinates
+ #define PW 300
+-#define PH 234
++#define PH 270
+ 
+ #define ROW_SFX   40
+ #define ROW_MUSIC 58
+@@ -32,7 +32,9 @@
+ #define ROW_RES   122
+ #define ROW_ZOOM  140
+ #define ROW_UI    158
+-#define ROW_NOTE  182
++#define ROW_PANELS 176
++#define ROW_RESET  194
++#define ROW_NOTE  218
+ 
+ #define CTRL_X 112 // left edge of the sliders and selectors
+ #define SLD_W  130 // slider width
+@@ -54,6 +56,9 @@
+ 	H_ZOOM_R,
+ 	H_UI_L,
+ 	H_UI_R,
++	H_PANELS_L,
++	H_PANELS_R,
++	H_RESET,
+ 	H_APPLY,
+ 	H_DONE,
+ };
+@@ -175,6 +180,10 @@
+ 			sdl_zoom = clampi(atoi(val), 0, 4);
+ 		} else if (!strcmp(line, "ui_size")) {
+ 			sdl_ui_size = clampi(atoi(val), 25, 400);
++		} else if (!strcmp(line, "ui_locked")) {
++			panels_locked = atoi(val) ? 1 : 0;
++		} else {
++			panels_load_setting(line, val);
+ 		}
+ 	}
+ 	fclose(fp);
+@@ -217,6 +226,7 @@
+ 	fprintf(fp, "music_volume=%d\n", music_volume);
+ 	fprintf(fp, "zoom=%d\n", sdl_zoom);
+ 	fprintf(fp, "ui_size=%d\n", sdl_ui_size);
++	panels_save_settings(fp);
+ 	if (have_gfx) {
+ 		fprintf(fp, "display_mode=%s\n", mode_key[clampi(cfg_mode, 0, 2)]);
+ 		if (cfg_mode != DISPMODE_BORDERLESS) {
+@@ -396,6 +406,15 @@
+ 	if (in_box(x, y, cx + SEL_W - 14, py + ROW_UI - 2, cx + SEL_W, py + ROW_UI + 11)) {
+ 		return H_UI_R;
+ 	}
++	if (in_box(x, y, cx, py + ROW_PANELS - 2, cx + 14, py + ROW_PANELS + 11)) {
++		return H_PANELS_L;
++	}
++	if (in_box(x, y, cx + SEL_W - 14, py + ROW_PANELS - 2, cx + SEL_W, py + ROW_PANELS + 11)) {
++		return H_PANELS_R;
++	}
++	if (in_box(x, y, cx, py + ROW_RESET - 3, cx + BTN_W, py + ROW_RESET - 3 + BTN_H)) {
++		return H_RESET;
++	}
+ 	if (sel_mode != DISPMODE_BORDERLESS) {
+ 		if (in_box(x, y, cx, py + ROW_RES - 2, cx + 14, py + ROW_RES + 11)) {
+ 			return H_RES_L;
+@@ -492,6 +511,15 @@
+ 		options_save();
+ 		break;
+ 	}
++	case H_PANELS_L:
++	case H_PANELS_R:
++		panels_locked = !panels_locked;
++		options_save();
++		break;
++	case H_RESET:
++		panels_reset();
++		options_save();
++		break;
+ 	case H_APPLY:
+ 		apply_graphics();
+ 		break;
+@@ -720,6 +748,10 @@
+ 		snprintf(buf, sizeof(buf), "%d%%", sdl_ui_size);
+ 	}
+ 	draw_selector(ROW_UI, "Interface size", buf, 1, hov == H_UI_L, hov == H_UI_R);
++	draw_selector(ROW_PANELS, "Panels", panels_locked ? "Locked" : "Movable (drag title)", 1, hov == H_PANELS_L,
++	    hov == H_PANELS_R);
++	render_text(px + 16, py + ROW_RESET, textcolor, 0, "Panel layout");
++	draw_button(px + CTRL_X, py + ROW_RESET - 3, "Reset", 1, hov == H_RESET);
+ 
+ 	// note
+ 	best = sdl_best_scale();
+diff -ruN pre2/src/gui/panels.c work/src/gui/panels.c
+--- a/src/gui/panels.c	1970-01-01 00:00:00.000000000 +0000
++++ b/src/gui/panels.c	2026-10-12 17:29:25.507557548 +0000
+@@ -0,0 +1,359 @@
++/*
++ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Interface panels
++ *
++ * The top bar and the bottom window are cut into panels (level bars, equipment, menu,
++ * skills, status, chat, inventory). Each panel shows its piece of the original picture
++ * inside a frame like the Options window, and can be dragged by its title strip. Positions
++ * are saved in settings.ini, anchored to the nearest screen edge so they survive window
++ * size changes.
++ *
++ * Everything inside a panel is positioned by dots and buttons. init_dots() lays them out
++ * relative to the original pictures and then moves each one by its panel's offset
++ * (pnl_dx(), pnl_dy()).
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <SDL3/SDL.h>
++
++#include "astonia.h"
++#include "gui/gui.h"
++#include "gui/gui_private.h"
++#include "game/game.h"
++#include "client/client.h"
++#include "sdl/sdl.h"
++
++#define PANEL_PAD   3 // frame width left, right and below the picture
++#define PANEL_GAP   0 // space between panels in the default layout
++
++struct panel {
++	const char *key; // settings.ini name
++	const char *title;
++	int bottom; // 0: piece of the top bar picture, 1: of the bottom window picture
++	int bx, bw; // piece of the picture: columns bx .. bx+bw-1
++
++	int x, y; // frame top left in GUI pixels
++	int saved; // position comes from the settings / a drag, not the default layout
++	int ax, ox, ay, oy; // saved position: anchor (0 left/top, 1 center, 2 right/bottom) and offset
++};
++
++static struct panel panel[MAX_PANEL] = {
++    {"level", "Level", 0, 0, 156},
++    {"equipment", "Equipment", 0, 156, 484},
++    {"menu", "Menu", 0, 640, 160},
++    {"skills", "Skills", 1, 0, 174},
++    {"status", "Status", 1, 174, 47},
++    {"chat", "Chat", 1, 221, 403},
++    {"inventory", "Inventory", 1, 624, 176},
++};
++
++int panels_locked = 0;
++
++static int drag = -1, drag_dx, drag_dy;
++
++static int top_h(void)
++{
++	return 40;
++}
++
++static int bot_h(void)
++{
++	return (game_options & GO_SMALLBOT) ? 130 : 170;
++}
++
++// height of the picture piece
++static int piece_h(int p)
++{
++	return panel[p].bottom ? bot_h() : top_h();
++}
++
++int pnl_w(int p)
++{
++	return panel[p].bw + PANEL_PAD * 2;
++}
++
++int pnl_h(int p)
++{
++	return piece_h(p) + PANEL_TITLE + PANEL_PAD;
++}
++
++int pnl_x(int p)
++{
++	return panel[p].x;
++}
++
++int pnl_y(int p)
++{
++	return panel[p].y;
++}
++
++// Offset from the original picture coordinates (picture top left at 0,0) to the screen
++int pnl_dx(int p)
++{
++	return panel[p].x + PANEL_PAD - panel[p].bx;
++}
++
++int pnl_dy(int p)
++{
++	return panel[p].y + PANEL_TITLE;
++}
++
++// Height of the default top row and the top of the default bottom row
++int panels_top_row_h(void)
++{
++	return top_h() + PANEL_TITLE + PANEL_PAD;
++}
++
++int panels_bottom_row_y(void)
++{
++	return YRES - (bot_h() + PANEL_TITLE + PANEL_PAD);
++}
++
++static int clampi(int v, int lo, int hi)
++{
++	if (v > hi) {
++		v = hi;
++	}
++	if (v < lo) {
++		v = lo;
++	}
++	return v;
++}
++
++// Default layout: the pieces side by side as in the original bars, centered
++static void default_pos(int p, int *px, int *py)
++{
++	int i, w = 0, x;
++
++	for (i = 0; i < MAX_PANEL; i++) {
++		if (panel[i].bottom == panel[p].bottom) {
++			w += pnl_w(i) + PANEL_GAP;
++		}
++	}
++	w -= PANEL_GAP;
++
++	x = (XRES - w) / 2;
++	for (i = 0; i < p; i++) {
++		if (panel[i].bottom == panel[p].bottom) {
++			x += pnl_w(i) + PANEL_GAP;
++		}
++	}
++	*px = x;
++	*py = panel[p].bottom ? panels_bottom_row_y() : 0;
++}
++
++static int anchor_pos(int a, int o, int size, int screen)
++{
++	switch (a) {
++	case 0:
++		return o;
++	case 1:
++		return (screen - size) / 2 + o;
++	default:
++		return screen - size - o;
++	}
++}
++
++// Remember the current position, anchored to the edge (or center) nearest to the panel
++static void store_anchor(int p)
++{
++	int w = pnl_w(p), h = pnl_h(p);
++	int cx = panel[p].x + w / 2, cy = panel[p].y + h / 2;
++
++	panel[p].ax = cx < XRES / 3 ? 0 : (cx < XRES * 2 / 3 ? 1 : 2);
++	panel[p].ay = cy < YRES / 3 ? 0 : (cy < YRES * 2 / 3 ? 1 : 2);
++	panel[p].ox = panel[p].ax == 0 ? panel[p].x : (panel[p].ax == 1 ? panel[p].x - (XRES - w) / 2 : XRES - w - panel[p].x);
++	panel[p].oy = panel[p].ay == 0 ? panel[p].y : (panel[p].ay == 1 ? panel[p].y - (YRES - h) / 2 : YRES - h - panel[p].y);
++	panel[p].saved = 1;
++}
++
++// Work out all panel positions for the current game area size. Called by init_dots().
++void panels_layout(void)
++{
++	int p;
++
++	for (p = 0; p < MAX_PANEL; p++) {
++		if (p == drag) {
++			continue; // being dragged: keep where the mouse put it
++		}
++		if (panel[p].saved) {
++			panel[p].x = anchor_pos(panel[p].ax, panel[p].ox, pnl_w(p), XRES);
++			panel[p].y = anchor_pos(panel[p].ay, panel[p].oy, pnl_h(p), YRES);
++		} else {
++			default_pos(p, &panel[p].x, &panel[p].y);
++		}
++		panel[p].x = clampi(panel[p].x, 0, XRES - pnl_w(p));
++		panel[p].y = clampi(panel[p].y, 0, YRES - pnl_h(p));
++	}
++}
++
++// Which panel is at this GUI position? -1 for none. Later panels are drawn on top.
++int pnl_at(int x, int y)
++{
++	int p;
++
++	for (p = MAX_PANEL - 1; p >= 0; p--) {
++		if (x >= panel[p].x && x < panel[p].x + pnl_w(p) && y >= panel[p].y && y < panel[p].y + pnl_h(p)) {
++			return p;
++		}
++	}
++	return -1;
++}
++
++static int on_title(int p, int x, int y)
++{
++	return x >= panel[p].x && x < panel[p].x + pnl_w(p) && y >= panel[p].y && y < panel[p].y + PANEL_TITLE;
++}
++
++// Panels moved: lay out the dots and buttons again (the map stays where it is)
++static void panels_moved(void)
++{
++	// the help window can be dragged on its own; keep it where it is
++	DOT hlp = dot[DOT_HLP], hl2 = dot[DOT_HL2];
++	BUT hdrag = but[BUT_HELP_DRAG];
++
++	init_dots();
++	dot[DOT_HLP] = hlp;
++	dot[DOT_HL2] = hl2;
++	but[BUT_HELP_DRAG] = hdrag;
++	set_invoff(0, invoff);
++	set_skloff(0, skloff);
++	set_conoff(0, conoff);
++}
++
++// Put every panel back to the default layout
++void panels_reset(void)
++{
++	int p;
++
++	for (p = 0; p < MAX_PANEL; p++) {
++		panel[p].saved = 0;
++	}
++	drag = -1;
++	panels_moved();
++}
++
++// Mouse input for dragging panels by their title strip. Returns 1 if the event was used.
++int panels_mouse(int what, int x, int y)
++{
++	int p;
++
++	switch (what) {
++	case SDL_MOUM_NONE:
++		if (drag != -1) {
++			panel[drag].x = clampi(x - drag_dx, 0, XRES - pnl_w(drag));
++			panel[drag].y = clampi(y - drag_dy, 0, YRES - pnl_h(drag));
++			panels_moved();
++			return 1;
++		}
++		return 0;
++
++	case SDL_MOUM_LDOWN:
++		if (panels_locked || csprite) {
++			return 0;
++		}
++		p = pnl_at(x, y);
++		if (p == -1 || !on_title(p, x, y)) {
++			return 0;
++		}
++		drag = p;
++		drag_dx = x - panel[p].x;
++		drag_dy = y - panel[p].y;
++		return 1;
++
++	case SDL_MOUM_LUP:
++		if (drag == -1) {
++			return 0;
++		}
++		store_anchor(drag);
++		drag = -1;
++		panels_moved();
++		options_save();
++		return 1;
++
++	default:
++		return drag != -1;
++	}
++}
++
++int panels_dragging(void)
++{
++	return drag != -1;
++}
++
++// settings.ini: panel_<key>=ax,ox,ay,oy
++int panels_load_setting(const char *key, const char *val)
++{
++	int p, ax, ox, ay, oy;
++
++	if (strncmp(key, "panel_", 6)) {
++		return 0;
++	}
++	for (p = 0; p < MAX_PANEL; p++) {
++		if (!strcmp(key + 6, panel[p].key)) {
++			if (sscanf(val, "%d,%d,%d,%d", &ax, &ox, &ay, &oy) == 4) {
++				panel[p].ax = clampi(ax, 0, 2);
++				panel[p].ox = ox;
++				panel[p].ay = clampi(ay, 0, 2);
++				panel[p].oy = oy;
++				panel[p].saved = 1;
++			}
++			return 1;
++		}
++	}
++	return 0;
++}
++
++void panels_save_settings(void *vfp)
++{
++	FILE *fp = vfp;
++	int p;
++
++	fprintf(fp, "ui_locked=%d\n", panels_locked);
++	for (p = 0; p < MAX_PANEL; p++) {
++		if (panel[p].saved) {
++			fprintf(fp, "panel_%s=%d,%d,%d,%d\n", panel[p].key, panel[p].ax, panel[p].ox, panel[p].ay, panel[p].oy);
++		}
++	}
++}
++
++// Frames, title strips and the pieces of the original pictures. The panel contents
++// (items, skills, chat, ...) are drawn on top by the display_*() functions.
++void panels_display(void)
++{
++	int p, sx, sy, hov;
++	unsigned int spr;
++
++	hov = (!panels_locked && drag == -1) ? pnl_at(mousex, mousey) : -1;
++	if (hov != -1 && !on_title(hov, mousex, mousey)) {
++		hov = -1;
++	}
++
++	render_push_clip();
++	for (p = 0; p < MAX_PANEL; p++) {
++		render_set_clip(0, 0, XRES, YRES);
++		gui_draw_panel(panel[p].x, panel[p].y, pnl_w(p), pnl_h(p), PANEL_TITLE);
++		if (p == drag || p == hov) {
++			render_rect_alpha(panel[p].x + 2, panel[p].y + 1, panel[p].x + pnl_w(p) - 2, panel[p].y + PANEL_TITLE - 1,
++			    whitecolor, 24);
++		}
++		if (pnl_w(p) >= 60) {
++			render_text(panel[p].x + pnl_w(p) / 2, panel[p].y + 1, p == drag ? whitecolor : IRGB(31, 24, 10), RENDER_ALIGN_CENTER | RENDER_TEXT_SMALL,
++			    panel[p].title);
++		}
++
++		sx = panel[p].x + PANEL_PAD;
++		sy = panel[p].y + PANEL_TITLE;
++		if (panel[p].bottom) {
++			spr = opt_sprite((game_options & GO_SMALLBOT) ? 991 : 998);
++		} else {
++			spr = opt_sprite(999);
++		}
++		render_set_clip(sx, sy, sx + panel[p].bw, sy + piece_h(p));
++		render_sprite(spr, sx - panel[p].bx, sy, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
++	}
++	render_pop_clip();
++}
+--- a/CMakeLists.txt	2026-10-12 17:29:47.090460317 +0000
++++ b/CMakeLists.txt	2026-10-12 17:29:37.869349085 +0000
+@@ -56,6 +56,7 @@
+     src/game/resource.rc src/helper/helper.c
+     src/gui/dots.c src/gui/display.c src/gui/teleport.c src/gui/color.c src/gui/cmd.c
+     src/gui/questlog.c src/gui/context.c src/gui/hover.c src/gui/minimap.c src/gui/options.c
++    src/gui/panels.c
+     src/modder/sharedmem_windows.c src/game/crash_handler_windows.c
+     src/game/memory_windows.c src/gui/draghack_windows.c src/client/unique_windows.c
+     src/game/version.c

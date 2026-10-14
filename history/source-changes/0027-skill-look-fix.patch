@@ -1,0 +1,17 @@
+--- a/src/gui/gui_buttons.c	2026-10-13 02:54:52.156488547 +0000
++++ b/src/gui/gui_buttons.c	2026-10-13 02:54:52.158796614 +0000
+@@ -1057,7 +1057,13 @@
+ static int get_skl_look(int x, int y)
+ {
+ 	int b, i;
+-	for (b = BUT_SKL_BEG; b <= BUT_SKL_END; b++) {
++
++	// mouse not over the skills panel: pnl_mx/pnl_my give -10000, which is also where
++	// hide_but() parks the unused skill rows, so it would "hit" one of them
++	if (pnl_at(mousex, mousey) != PNL_SKILLS) {
++		return -1;
++	}
++	for (b = BUT_SKL_BEG; b < BUT_SKL_BEG + SKLDY && b <= BUT_SKL_END; b++) {
+ 		i = skloff + b - BUT_SKL_BEG;
+ 		if (i >= skltab_cnt) {
+ 			continue;

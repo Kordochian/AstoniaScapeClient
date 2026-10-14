@@ -1,0 +1,14 @@
+{
+  "name": "astonia-client",
+  "version-string": "3.5",
+  "description": "Astonia community client, native Windows build (Visual Studio + clang-cl)",
+  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
+  "dependencies": [
+    { "name": "sdl3", "default-features": false },
+    { "name": "sdl3-mixer", "default-features": false },
+    "libpng",
+    { "name": "libzip", "default-features": false },
+    "zlib",
+    "mimalloc"
+  ]
+}

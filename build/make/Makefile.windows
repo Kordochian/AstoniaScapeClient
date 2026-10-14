@@ -1,0 +1,489 @@
+.PHONY: all debug release console amod convert anicopy clean distrib-stage distrib build-sdl3 build-sdl3-mixer verify-sdl3 verify-sdl3-mixer
+
+# Build type: release (default) or debug
+# Usage: make BUILD_TYPE=debug
+BUILD_TYPE ?= release
+
+all: bin/moac.exe
+
+# Ensure we use CLANG64 libraries on Windows
+# This prevents accidentally using mingw64/gcc libraries when both are installed
+# Works in MSYS2 shells, CMD, and PowerShell
+
+# Detect CLANG64 prefix in order of likelihood:
+# 1. MSYS2 environment variable (set in MSYS2 shells)
+# 2. Standard MSYS2 installation path C:/msys64/clang64
+# 3. MSYS2 path from within MSYS2 shell: /clang64
+# 4. Custom path via CLANG64_PREFIX environment variable
+
+ifndef CLANG64_PREFIX
+    ifneq ($(MSYSTEM_PREFIX),)
+        # In MSYS2 shell, use MSYSTEM_PREFIX
+        CLANG64_PREFIX := $(MSYSTEM_PREFIX)
+    else ifeq ($(wildcard C:/msys64/clang64/lib/pkgconfig/sdl3.pc),C:/msys64/clang64/lib/pkgconfig/sdl3.pc)
+        # Standard MSYS2 installation (CMD/PowerShell)
+        CLANG64_PREFIX := C:/msys64/clang64
+    else ifeq ($(wildcard /clang64/lib/pkgconfig/sdl3.pc),/clang64/lib/pkgconfig/sdl3.pc)
+        # MSYS2 path from within a different MSYS2 shell
+        CLANG64_PREFIX := /clang64
+    endif
+endif
+
+# Configure build to use CLANG64 libraries explicitly
+ifneq ($(CLANG64_PREFIX),)
+    export PKG_CONFIG_PATH := $(CLANG64_PREFIX)/lib/pkgconfig:$(CLANG64_PREFIX)/share/pkgconfig
+    export PATH := $(CLANG64_PREFIX)/bin:$(PATH)
+    $(info Using CLANG64 libraries from: $(CLANG64_PREFIX))
+else
+    $(warning WARNING: Could not detect CLANG64 installation. Build may fail or use wrong libraries.)
+    $(warning Set CLANG64_PREFIX environment variable to your clang64 installation path if needed.)
+endif
+
+# ============================================================================
+# Bash Detection for Cross-Environment Compatibility
+# ============================================================================
+# Detects bash executable path for use in shell commands
+# Works in MSYS2 shells, CMD, and PowerShell
+# Usage: $(BASH_CMD) -c 'your command here'
+# ============================================================================
+# Shell command fragment that finds bash in order of preference:
+# 1. MSYSTEM_PREFIX/usr/bin/bash (MSYS2 environment variable)
+# 2. /usr/bin/bash (MSYS2 path from within MSYS2 shell)
+# 3. C:/msys64/usr/bin/bash.exe (Standard MSYS2 installation from CMD/PowerShell)
+# 4. bash (fallback, assumes it's in PATH)
+BASH_DETECT_CMD = if [ -n "$$MSYSTEM_PREFIX" ] && [ -x "$$MSYSTEM_PREFIX/usr/bin/bash" ]; then \
+		echo "$$MSYSTEM_PREFIX/usr/bin/bash"; \
+	elif [ -n "$$MSYSTEM_PREFIX" ] && [ -x "/usr/bin/bash" ]; then \
+		echo "/usr/bin/bash"; \
+	elif [ -x "C:/msys64/usr/bin/bash.exe" ]; then \
+		echo "C:/msys64/usr/bin/bash.exe"; \
+	else \
+		echo "bash"; \
+	fi
+
+# ============================================================================
+# Build Configuration Variables
+# ============================================================================
+
+# Toolchain (can be overridden by Docker ENV)
+WINDRES ?= windres
+LDD ?= ldd
+CC ?= clang
+CXX ?= clang++
+AR ?= llvm-ar
+RANLIB ?= llvm-ranlib
+
+# Build type configuration
+ifeq ($(BUILD_TYPE),debug)
+    OPT ?= -O0
+    DEBUG ?= -gdwarf-4 -g3
+    DEVELOPER_FLAGS = -DDEVELOPER
+    $(info Building DEBUG configuration)
+else
+    OPT ?= -O3
+    DEBUG ?= -gdwarf-4
+    DEVELOPER_FLAGS = -DNDEBUG
+    $(info Building RELEASE configuration)
+endif
+
+# Cross-compilation configuration (from Docker ENV or defaults)
+TARGET ?= x86_64-w64-mingw32
+SYSROOT ?= /clang64
+WIN32_WINNT ?= 0x0601
+
+# Detect and validate clang version (require 21+)
+CLANG_MAJOR_VERSION := $(shell $(CC) -dumpversion 2>/dev/null | cut -d. -f1)
+ifeq ($(CLANG_MAJOR_VERSION),)
+    $(error Could not detect $(CC) version. Is clang installed?)
+endif
+CLANG_VERSION_OK := $(shell [ "$(CLANG_MAJOR_VERSION)" -ge 21 ] 2>/dev/null && echo yes)
+ifneq ($(CLANG_VERSION_OK),yes)
+    $(error Clang version $(CLANG_MAJOR_VERSION) is too old. Version 21+ is required.)
+endif
+
+# SDL configuration
+# Get SDL3 flags and convert -I to -isystem to suppress warnings from SDL headers
+SDL_CFLAGS_RAW ?= $(shell pkg-config sdl3 --cflags)
+SDL_CFLAGS ?= $(patsubst -I%,-isystem %,$(SDL_CFLAGS_RAW))
+SDL_PREFIX ?= $(shell pkg-config sdl3 --variable=prefix)
+
+# ============================================================================
+# Compiler and Linker Flag Components
+# ============================================================================
+
+# Cross-compilation flags
+CROSS_FLAGS = --target=$(TARGET) --sysroot=$(SYSROOT)
+
+# Windows platform flags
+PLATFORM_FLAGS = -fms-extensions -D_WIN32 -D_WIN32_WINNT=$(WIN32_WINNT)
+
+# Runtime library configuration
+# Note: Resource dir needed for cross-compilation to find headers/builtins during compilation
+RTLIB_FLAGS = -resource-dir=$(SYSROOT)/lib/clang/$(CLANG_MAJOR_VERSION)
+
+STRICT_WARNING_FLAGS = \
+    -Wall -Wextra -Wpedantic \
+    -Wformat=2 \
+    -Wnull-dereference \
+    -Wdouble-promotion \
+    -Wcast-align \
+    -Wcast-qual \
+    -Wconversion -Wsign-conversion \
+    -Wmissing-prototypes -Wstrict-prototypes \
+    -Wvla \
+    -Wfloat-equal \
+    -Wnewline-eof
+
+# All warnings are errors
+WARNING_FLAGS ?= $(STRICT_WARNING_FLAGS) -Werror
+
+
+# Security/hardening flags
+SECURITY_FLAGS = -fstack-protector-strong \
+    -D_FORTIFY_SOURCE=2
+
+# Optimization and debugging flags
+OPT_FLAGS = $(OPT) $(DEBUG) -fno-omit-frame-pointer
+
+# Visibility control for DLL symbols
+VISIBILITY_FLAGS = -fvisibility=hidden
+
+# Link-Time Optimization (ThinLTO for faster builds)
+LTO_FLAGS = -flto=thin
+
+# Default to using mimalloc unless USE_MIMALLOC=0 is set
+USE_MIMALLOC ?= 1
+
+# Project feature flags
+FEATURE_FLAGS = -DSTORE_UNIQUE \
+    -DENABLE_CRASH_HANDLER \
+    -DENABLE_SHAREDMEM \
+    -DENABLE_DRAGHACK \
+    -DUSE_MIMALLOC=$(USE_MIMALLOC) \
+    -DSDL_FUNCTION_POINTER_IS_VOID_POINTER \
+    $(DEVELOPER_FLAGS)
+
+# ============================================================================
+# CFLAGS Assembly
+# ============================================================================
+
+ifndef CFLAGS
+    # Local build - construct from components
+    CFLAGS = $(CROSS_FLAGS) \
+             $(PLATFORM_FLAGS) \
+             $(RTLIB_FLAGS) \
+             $(WARNING_FLAGS) \
+             $(SECURITY_FLAGS) \
+             $(OPT_FLAGS) \
+             $(VISIBILITY_FLAGS) \
+             $(LTO_FLAGS) \
+             $(FEATURE_FLAGS) \
+             $(SDL_CFLAGS) \
+             -I$(SDL_PREFIX)/include \
+             -Iinclude \
+             -Isrc
+else
+    # Docker environment - append project-specific flags only
+    # (Cross-compilation flags already set in ENV)
+    CFLAGS += $(WARNING_FLAGS) \
+              $(SECURITY_FLAGS) \
+              $(OPT_FLAGS) \
+              $(VISIBILITY_FLAGS) \
+              $(LTO_FLAGS) \
+              $(FEATURE_FLAGS)
+endif
+
+# ============================================================================
+# LDFLAGS Assembly
+# ============================================================================
+
+# Linker flags for cross-compilation
+LINKER_FLAGS = --target=$(TARGET) \
+               --sysroot=$(SYSROOT) \
+               -fuse-ld=lld \
+               --rtlib=compiler-rt \
+               -resource-dir=$(SYSROOT)/lib/clang/$(CLANG_MAJOR_VERSION)
+
+# Link-Time Optimization (must match CFLAGS)
+LDFLAGS_LTO = -flto=thin
+
+# Windows subsystem selection
+SUBSYSTEM_GUI = -Wl,-subsystem,windows
+SUBSYSTEM_CONSOLE = -Wl,-subsystem,console
+
+# Security hardening for linker
+LDFLAGS_SECURITY = -Wl,--dynamicbase \
+                   -Wl,--nxcompat \
+                   -Wl,--high-entropy-va
+
+# Debug information
+LDFLAGS_DEBUG = $(DEBUG)
+
+# Main LDFLAGS
+ifndef LDFLAGS
+    LDFLAGS = $(LINKER_FLAGS) \
+              $(LDFLAGS_LTO) \
+              $(LDFLAGS_DEBUG) \
+              $(LDFLAGS_SECURITY) \
+              $(SUBSYSTEM_GUI)
+endif
+
+# Console subsystem variant for debugging
+LDFLAGS_CONSOLE ?= $(LINKER_FLAGS) \
+                   $(LDFLAGS_LTO) \
+                   $(LDFLAGS_DEBUG) \
+                   $(LDFLAGS_SECURITY) \
+                   $(SUBSYSTEM_CONSOLE)
+
+SDL_LIBS=$(shell pkg-config sdl3 --libs)
+LIBS = -lwsock32 -lws2_32 -lpsapi -lz -lpng -lzip -ldwarfstack $(SDL_LIBS) -lSDL3_mixer
+ifeq ($(USE_MIMALLOC),1)
+LIBS += -lmimalloc
+endif
+
+ASTONIA_NET_DIR=astonia_net
+ASTONIA_NET_TGT=x86_64-pc-windows-gnullvm
+ASTONIA_NET_LIB=$(ASTONIA_NET_DIR)/target/$(ASTONIA_NET_TGT)/release/libastonia_net.dll.a
+
+OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui_inventory.o src/gui/gui_buttons.o src/gui/gui_map.o\
+			src/client/client.o src/client/protocol.o src/client/skill.o\
+			src/game/game_core.o src/game/game_effects.o src/game/game_lighting.o src/game/game_display.o\
+			src/game/render.o src/game/font.o src/game/main.o src/game/sprite.o src/game/sprite_config.o\
+			src/game/memory.o\
+			src/modder/modder.o\
+			src/sdl/sdl_core.o src/sdl/sdl_texture.o src/sdl/sdl_image.o src/sdl/sdl_effects.o src/sdl/sdl_draw.o src/sdl/sound.o\
+			src/game/resource.o src/helper/helper.o\
+			src/gui/dots.o src/gui/display.o src/gui/teleport.o src/gui/color.o src/gui/cmd.o\
+			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o\
+			src/modder/sharedmem_windows.o src/game/crash_handler_windows.o\
+			src/game/memory_windows.o src/gui/draghack_windows.o src/client/unique_windows.o\
+			src/game/version.o\
+			src/lib/cjson/cJSON.o
+
+bin/moac.exe lib/moac.a lib/moac.lib:	verify-sdl3-mixer $(OBJS) $(ASTONIA_NET_LIB)
+			$(CC) $(LDFLAGS) -Wl,--out-implib,lib/moac.a -o bin/moac.exe $(OBJS) $(ASTONIA_NET_LIB) $(LIBS)
+			@echo "Creating MSVC-compatible import library..."
+			@cp lib/moac.a lib/moac.lib
+			@echo "Copying Rust DLL to bin directory..."
+			@cp $(ASTONIA_NET_DIR)/target/$(ASTONIA_NET_TGT)/release/astonia_net.dll bin/ || { echo "Failed to copy DLL"; exit 1; }
+			@echo "Build completed successfully!"
+			@echo "Output: bin/moac.exe, bin/astonia_net.dll"
+			@echo "Import libraries: lib/moac.a (GCC/Clang), lib/moac.lib (MSVC)"
+			@ls -lh bin/moac.exe bin/astonia_net.dll lib/moac.a lib/moac.lib
+
+bin/moac_dbg.exe lib/moac_dbg.a:	$(OBJS) $(ASTONIA_NET_LIB)
+			$(CC) $(LDFLAGS_CONSOLE) -Wl,--out-implib,lib/moac_dbg.a -o bin/moac_dbg.exe $(OBJS) $(ASTONIA_NET_LIB) $(LIBS)
+
+$(ASTONIA_NET_LIB):
+			cargo build --release --manifest-path $(ASTONIA_NET_DIR)/Cargo.toml --target $(ASTONIA_NET_TGT)
+
+bin/amod.dll:		src/amod/amod.o lib/moac.a
+			$(CC) $(LDFLAGS) $(OPT) $(DEBUG) -shared -o bin/amod.dll src/amod/amod.o lib/moac.a
+
+src/amod/amod.o:	src/amod/amod.c src/amod/amod.h src/amod/amod_structs.h
+
+bin/anicopy.exe:	src/helper/anicopy.c
+			$(CC) $(OPT) $(DEBUG) -Wall -o bin/anicopy.exe src/helper/anicopy.c
+
+bin/convert.exe:	src/helper/convert.c
+			$(CC) $(OPT) $(DEBUG) -Wall -DSTANDALONE -DUSE_MIMALLOC=$(USE_MIMALLOC) -o bin/convert.exe src/helper/convert.c -lpng -lzip $(if $(filter 1,$(USE_MIMALLOC)),-lmimalloc,)
+
+
+src/client/client.o:	src/client/client.c src/astonia.h src/client/client.h src/client/client_private.h src/sdl/sdl.h
+src/client/protocol.o: src/client/protocol.c src/astonia.h src/client/client.h src/client/client_private.h src/gui/gui.h src/modder/modder.h src/client/protocol.h
+
+src/game/render.o:		src/game/render.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/sdl/sdl.h
+src/game/font.o:	src/game/font.c src/game/game.h src/game/game_private.h
+src/game/game.o:    	src/game/game.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h
+src/game/main.o:	src/game/main.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h src/sdl/sdl.h src/modder/modder.h
+src/game/skill.o:      	src/game/skill.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h
+src/game/sprite.o:	src/game/sprite.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h src/game/sprite_config.h
+src/game/sprite_config.o:	src/game/sprite_config.c src/game/sprite_config.h src/lib/cjson/cJSON.h src/astonia.h
+
+# cJSON library (third-party, suppress warnings)
+src/lib/cjson/cJSON.o:	src/lib/cjson/cJSON.c src/lib/cjson/cJSON.h
+		$(CC) $(OPT) $(DEBUG) -fno-omit-frame-pointer -fvisibility=hidden -Isrc -c -o $@ $<
+
+src/gui/color.o:	src/gui/color.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/context.o:	src/gui/context.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/cmd.o:		src/gui/cmd.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+src/gui/dots.o:		src/gui/dots.c src/astonia.h src/gui/gui.h src/gui/gui_private.h
+src/gui/display.o:	src/gui/display.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/gui.o:		src/gui/gui.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h  src/sdl/sdl.h src/modder/modder.h
+src/gui/hover.o:	src/gui/hover.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/gui/gui.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+src/gui/minimap.o:	src/gui/minimap.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+src/gui/options.o:	src/gui/options.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+src/gui/teleport.o:	src/gui/teleport.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/questlog.o:	src/gui/questlog.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+
+# Refactored GUI modules
+src/gui/gui_core.o:	src/gui/gui_core.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+src/gui/gui_input.o:	src/gui/gui_input.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h
+src/gui/gui_display.o:	src/gui/gui_display.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h
+src/gui/gui_inventory.o:	src/gui/gui_inventory.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+src/gui/gui_buttons.o:	src/gui/gui_buttons.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h src/sdl/sdl.h
+src/gui/gui_map.o:		src/gui/gui_map.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+
+# Refactored game modules
+src/game/game_core.o:	src/game/game_core.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h
+src/game/game_display.o:	src/game/game_display.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h src/gui/gui.h src/sdl/sdl.h
+src/game/game_effects.o:	src/game/game_effects.c src/astonia.h src/game/game.h src/game/game_private.h src/client/client.h
+src/game/game_lighting.o:	src/game/game_lighting.c src/astonia.h src/game/game.h src/game/game_private.h
+
+# Refactored SDL modules
+src/sdl/sdl_core.o:	src/sdl/sdl_core.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h src/client/client.h src/gui/gui.h src/modder/modder.h
+src/sdl/sdl_texture.o:	src/sdl/sdl_texture.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+src/sdl/sdl_image.o:	src/sdl/sdl_image.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h src/game/game.h
+src/sdl/sdl_effects.o:	src/sdl/sdl_effects.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+src/sdl/sdl_draw.o:	src/sdl/sdl_draw.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h src/game/game.h
+
+src/helper/helper.o:	src/helper/helper.c src/astonia.h
+src/helper/convert.o:	src/helper/convert.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+
+src/modder/modder.o:	src/modder/modder.c src/astonia.h src/modder/modder.h src/modder/modder_private.h src/client/client.h
+src/modder/sharedmem_windows.o:	src/modder/sharedmem_windows.c src/astonia.h src/modder/modder.h src/modder/modder_private.h src/client/client.h
+
+src/sdl/sdl.o:		src/sdl/sdl.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+src/sdl/sound.o:      	src/sdl/sound.c src/astonia.h src/sdl/sdl.h src/sdl/sdl_private.h
+
+src/client/unique_windows.o: src/client/unique_windows.c
+src/game/crash_handler_windows.o: src/game/crash_handler_windows.c
+src/game/memory.o: src/game/memory.c src/game/memory.h src/astonia.h src/sdl/sdl.h
+
+src/game/memory_windows.o: src/game/memory_windows.c
+src/game/version.o: src/game/version.c
+src/gui/draghack_windows.o: src/gui/draghack_windows.c
+
+src/game/resource.o:	src/game/resource.rc src/game/resource.h res/moa3.ico
+			$(WINDRES) -F pe-x86-64 src/game/resource.rc src/game/resource.o
+
+# Verify SDL3 is available (fails with helpful message if not found)
+verify-sdl3:
+	@BASH_CMD=$$($(BASH_DETECT_CMD)); \
+	$$BASH_CMD -c 'if ! pkg-config --exists sdl3 2>/dev/null; then \
+		echo ""; \
+		echo "ERROR: SDL3 not found."; \
+		echo ""; \
+		echo "Please build and install SDL3 from source by running:"; \
+		echo "  make build-sdl3"; \
+		echo ""; \
+		exit 1; \
+	fi'
+
+# Verify SDL3_mixer is available (fails with helpful message if not found)
+verify-sdl3-mixer: verify-sdl3
+	@BASH_CMD=$$($(BASH_DETECT_CMD)); \
+	$$BASH_CMD -c 'if ! pkg-config --exists sdl3-mixer 2>/dev/null; then \
+		echo ""; \
+		echo "ERROR: SDL3_mixer not found."; \
+		echo ""; \
+		echo "Please build and install SDL3_mixer from source by running:"; \
+		echo "  make build-sdl3-mixer"; \
+		echo ""; \
+		echo "Note: SDL3_mixer requires SDL3 to be installed first."; \
+		echo ""; \
+		exit 1; \
+	fi'
+
+# Build SDL3 from source (always builds, no detection)
+build-sdl3:
+	@echo "Building SDL3 from source..."
+	@BASH_CMD=$$($(BASH_DETECT_CMD)); \
+	$$BASH_CMD -c 'TMP_DIR=$${TMPDIR:-$${TMP:-$${TEMP:-/tmp}}}; \
+		if [ -d "$$TMP_DIR" ]; then \
+			BUILD_DIR="$$TMP_DIR"; \
+		elif [ -d "/tmp" ]; then \
+			BUILD_DIR="/tmp"; \
+		else \
+			BUILD_DIR=$$(mktemp -d); \
+		fi; \
+		cd "$$BUILD_DIR" && \
+		rm -rf SDL SDL-build && \
+		git clone --depth 1 --branch main https://github.com/libsdl-org/SDL.git SDL && \
+		cmake -S SDL -B SDL-build -G Ninja \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX=$(CLANG64_PREFIX) \
+			-DSDL_STATIC=OFF && \
+		cmake --build SDL-build && \
+		cmake --install SDL-build && \
+		cd "$$BUILD_DIR" && \
+		rm -rf SDL SDL-build && \
+		echo "SDL3 installed to $(CLANG64_PREFIX)"'
+
+# Build SDL3_mixer from source (always builds, no detection)
+# Note: SDL3 must be installed first
+build-sdl3-mixer: verify-sdl3
+	@echo "Building SDL3_mixer from source..."
+	@BASH_CMD=$$($(BASH_DETECT_CMD)); \
+	$$BASH_CMD -c 'TMP_DIR=$${TMPDIR:-$${TMP:-$${TEMP:-/tmp}}}; \
+		if [ -d "$$TMP_DIR" ]; then \
+			BUILD_DIR="$$TMP_DIR"; \
+		elif [ -d "/tmp" ]; then \
+			BUILD_DIR="/tmp"; \
+		else \
+			BUILD_DIR=$$(mktemp -d); \
+		fi; \
+		cd "$$BUILD_DIR" && \
+		rm -rf SDL_mixer SDL_mixer-build && \
+		git clone --depth 1 --branch main https://github.com/libsdl-org/SDL_mixer.git SDL_mixer && \
+		cmake -S SDL_mixer -B SDL_mixer-build -G Ninja \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX=$(CLANG64_PREFIX) \
+			-DCMAKE_PREFIX_PATH=$(CLANG64_PREFIX) \
+			-DSDL3MIXER_VENDORED=ON && \
+		cmake --build SDL_mixer-build && \
+		cmake --install SDL_mixer-build && \
+		cd "$$BUILD_DIR" && \
+		rm -rf SDL_mixer SDL_mixer-build && \
+		echo "SDL3_mixer installed to $(CLANG64_PREFIX)"'
+
+clean:
+	@echo "Cleaning build artifacts..."
+	-rm -f src/*/*.o src/*/*-sanitizer.o src/*/*-coverage.o
+	-rm -f bin/*.exe bin/*.dll lib/*.a
+	-rm -f bin/convert.exe bin/anicopy.exe
+	@echo "Cleaning coverage files..."
+	-find . -type f -name '*.gcda' -delete 2>/dev/null || true
+	-find . -type f -name '*.gcno' -delete 2>/dev/null || true
+	-find . -type f -name '*.gcov' -delete 2>/dev/null || true
+	-find . -type f -name '*.gcov.json.gz' -delete 2>/dev/null || true
+	-rm -f coverage.info coverage-filtered.info
+	-rm -rf coverage-html
+	@echo "Cleaning profiling data..."
+	-find . -type f -name '*.profraw' -delete 2>/dev/null || true
+	-find . -type f -name '*.profdata' -delete 2>/dev/null || true
+	@echo "Cleaning analysis reports..."
+	-rm -f compile_commands.json
+	-rm -f valgrind-report.txt
+	-rm -f asan-report.txt.*
+	-rm -f ubsan-report.txt.*
+	-rm -f .clang-tidy-*
+	@echo "Cleaning Rust artifacts..."
+	-rm -rf astonia_net/target
+	@echo "Cleaning distribution artifacts..."
+	-rm -rf distrib
+	-rm -f windows_client.zip
+
+# Prepare distribution staging directory
+distrib-stage:
+	@echo "Preparing Windows distribution staging..."
+	@BASH_CMD=$$($(BASH_DETECT_CMD)); \
+	$$BASH_CMD build/tools/package_windows.sh
+
+# Legacy target for local development (creates archive)
+distrib: distrib-stage
+	@echo "Creating distribution archive..."
+	@cd distrib && zip -q -r ../windows_client.zip windows_client
+	@echo "Distribution package created: windows_client.zip"
+
+
+amod:		bin/amod.dll bin/moac.exe
+convert:	bin/convert.exe
+anicopy:	bin/anicopy.exe
+console:	bin/moac_dbg.exe
+
+debug:
+	$(MAKE) -f build/make/Makefile.windows BUILD_TYPE=debug
+
+release:
+	$(MAKE) -f build/make/Makefile.windows BUILD_TYPE=release

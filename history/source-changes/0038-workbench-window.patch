@@ -1,0 +1,220 @@
+diff -ru a/src/client/client.c b/src/client/client.c
+--- a/src/client/client.c
++++ b/src/client/client.c
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+
+-#define CLIENT_PROTOCOL_VERSION 8 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech
++#define CLIENT_PROTOCOL_VERSION 9 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window
+
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+diff -ru a/src/gui/craftwin.c b/src/gui/craftwin.c
+--- a/src/gui/craftwin.c
++++ b/src/gui/craftwin.c
+@@ -1,14 +1,16 @@
+ /*
+  * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
+  *
+- * Furnace and anvil window (protocol 7): the server sends the recipes of the station the
+- * player clicked (SV_CRAFTLIST, server skilling.c send_craft_list). The window shows them as
+- * a grid of items: the item, its name and the bars it needs. Pick an amount on the right
+- * (1, 5, 10, All), then click an item to make it; that sends "/smelt <key> <count>" or
+- * "/smith <key> <count>". After each make the server sends the list again with new counts.
++ * Furnace, anvil and workbench window (protocol 7, workbench protocol 9): the server sends the
++ * recipes of the station the player clicked (SV_CRAFTLIST, server skilling.c send_craft_list).
++ * The window shows them as a grid of items: the item, its name and the bars it needs. Pick an
++ * amount on the right (1, 5, 10, All), then click an item to make it; that sends
++ * "/smelt <key> <count>", "/smith <key> <count>" or "/craft <key> <count>". After each make the
++ * server sends the list again with new counts. Protocol 9 servers also send the window title,
++ * command, skill name, tool and station name, so new stations need no client change.
+  *
+- * Anvil recipes are grouped by their material (the bar they use). Tabs above the grid switch
+- * the metal; when the window opens it picks the best metal the player carries bars of.
++ * Anvil and workbench recipes are grouped by their material (bar, logs ...). Tabs above the grid
++ * switch it; when the window opens it picks the best material the player carries.
+  */
+
+ #include <stdint.h>
+@@ -42,7 +44,8 @@
+ #define MAXMAT   32
+
+ #define CRAFT_OPEN     1
+-#define CRAFT_NOHAMMER 2
++#define CRAFT_NOHAMMER 2 // no tool for this station (hammer, knife)
++#define CRAFT_GROUP    4 // protocol 9: group recipes by material
+
+ struct craft_recipe {
+ 	int nr, level, canmake, xp;
+@@ -56,7 +59,7 @@
+ struct craft_mat {
+ 	int nr, have;
+ 	char name[40];
+-	char tab[40]; // name without " bar"
++	char tab[40]; // name without " bar" / " logs"
+ };
+
+ enum {
+@@ -75,8 +78,10 @@
+ static int recipe_cnt = 0;
+ static struct craft_mat mat[MAXMAT];
+ static int mat_cnt = 0;
+-static int cw_station = 0; // 1 furnace, 2 anvil
++static int cw_station = 0; // 1 furnace, 2 anvil, 3 workbench
+ static int cw_flags = 0, cw_level = 0;
++// station texts (sent by protocol 9 servers, else set from the station number)
++static char cw_title[96], cw_cmd[16], cw_skill[40], cw_tool[40], cw_stname[40];
+ static int cw_open = 0;
+ static int cw_dx = 0, cw_dy = 0, cw_drag = 0, cw_drag_x, cw_drag_y;
+ static int cw_pressed = C_NONE;
+@@ -100,7 +105,7 @@
+
+ static int cw_tabs(void)
+ {
+-	return cw_station == 2 && mat_cnt > 1;
++	return (cw_station == 2 || (cw_flags & CRAFT_GROUP)) && mat_cnt > 1;
+ }
+
+ static int cw_can_make(const struct craft_recipe *r)
+@@ -108,7 +113,7 @@
+ 	if (cw_level < r->level || r->canmake < 1) {
+ 		return 0;
+ 	}
+-	if (cw_station == 2 && (cw_flags & CRAFT_NOHAMMER)) {
++	if (cw_flags & CRAFT_NOHAMMER) {
+ 		return 0;
+ 	}
+ 	return 1;
+@@ -238,12 +243,27 @@
+ 		p += 3;
+ 		p = cw_string(buf, p, len, cm->name, sizeof(cm->name));
+ 		snprintf(cm->tab, sizeof(cm->tab), "%s", cm->name);
+-		if ((s = strstr(cm->tab, " bar")) || (s = strstr(cm->tab, " Bar"))) {
++		if ((s = strstr(cm->tab, " bar")) || (s = strstr(cm->tab, " Bar")) || (s = strstr(cm->tab, " Logs")) ||
++		    (s = strstr(cm->tab, " logs"))) {
+ 			*s = 0;
+ 		}
+ 	}
+ 	mat_cnt = m < MAXMAT ? m : MAXMAT;
+
++	// protocol 9: title, command, skill, tool, station name
++	p = cw_string(buf, p, len, cw_title, sizeof(cw_title));
++	p = cw_string(buf, p, len, cw_cmd, sizeof(cw_cmd));
++	p = cw_string(buf, p, len, cw_skill, sizeof(cw_skill));
++	p = cw_string(buf, p, len, cw_tool, sizeof(cw_tool));
++	p = cw_string(buf, p, len, cw_stname, sizeof(cw_stname));
++	if (!cw_cmd[0]) { // older server: furnace or anvil
++		snprintf(cw_title, sizeof(cw_title), "%s", station == 1 ? "What would you like to smelt?" : "What would you like to make?");
++		snprintf(cw_cmd, sizeof(cw_cmd), "%s", station == 1 ? "smelt" : "smith");
++		snprintf(cw_skill, sizeof(cw_skill), "Smithing");
++		snprintf(cw_tool, sizeof(cw_tool), "a hammer");
++		snprintf(cw_stname, sizeof(cw_stname), "%s", station == 1 ? "furnace" : "anvil");
++	}
++
+ 	if (flags & CRAFT_OPEN) {
+ 		cw_open = 1;
+ 		cw_scroll = 0;
+@@ -350,9 +370,9 @@
+ 		return;
+ 	}
+ 	if (amount_cnt[cw_amount]) {
+-		snprintf(buf, sizeof(buf), "/%s %s %d", cw_station == 1 ? "smelt" : "smith", recipe[i].key, amount_cnt[cw_amount]);
++		snprintf(buf, sizeof(buf), "/%s %s %d", cw_cmd, recipe[i].key, amount_cnt[cw_amount]);
+ 	} else {
+-		snprintf(buf, sizeof(buf), "/%s %s all", cw_station == 1 ? "smelt" : "smith", recipe[i].key);
++		snprintf(buf, sizeof(buf), "/%s %s all", cw_cmd, recipe[i].key);
+ 	}
+ 	cmd_text(buf);
+ }
+@@ -473,6 +493,18 @@
+ 	return "";
+ }
+
++static const char *cw_mat_fullname(int m)
++{
++	int i;
++
++	for (i = 0; i < mat_cnt; i++) {
++		if (mat[i].nr == m) {
++			return mat[i].name;
++		}
++	}
++	return "";
++}
++
+ static int cw_mat_have(int m)
+ {
+ 	int i;
+@@ -567,9 +599,9 @@
+ 		render_text_fmt(px + 12, y, whitecolor, 0, "%s: level %d, %d XP each, needs %s.", rc->name, rc->level, rc->xp,
+ 		    rc->need);
+ 		if (cw_level < rc->level) {
+-			render_text_fmt(px + 12, y + 12, red, 0, "You need Smithing level %d.", rc->level);
+-		} else if (cw_station == 2 && (cw_flags & CRAFT_NOHAMMER)) {
+-			render_text(px + 12, y + 12, red, 0, "You need a hammer.");
++			render_text_fmt(px + 12, y + 12, red, 0, "You need %s level %d.", cw_skill, rc->level);
++		} else if (cw_flags & CRAFT_NOHAMMER) {
++			render_text_fmt(px + 12, y + 12, red, 0, "You need %s.", cw_tool);
+ 		} else if (rc->canmake < 1) {
+ 			render_text(px + 12, y + 12, red, 0, "You do not have the materials.");
+ 		} else {
+@@ -579,15 +611,18 @@
+ 		return;
+ 	}
+
+-	if (cw_station == 2 && (cw_flags & CRAFT_NOHAMMER)) {
+-		render_text(px + 12, y, red, 0, "You need a hammer to use the anvil.");
+-	} else if (cw_tabs() && cw_mat != -1) {
++	if (cw_flags & CRAFT_NOHAMMER) {
++		render_text_fmt(px + 12, y, red, 0, "You need %s to use the %s.", cw_tool, cw_stname);
++	} else if (cw_tabs() && cw_mat != -1 && cw_station == 2) {
+ 		render_text_fmt(px + 12, y, lightgraycolor, 0, "You carry %d %s bar%s. Pick an amount, then click an item.",
+ 		    cw_mat_have(cw_mat), cw_mat_name(cw_mat), cw_mat_have(cw_mat) == 1 ? "" : "s");
++	} else if (cw_tabs() && cw_mat != -1) {
++		render_text_fmt(px + 12, y, lightgraycolor, 0, "You carry %d %s. Pick an amount, then click an item.",
++		    cw_mat_have(cw_mat), cw_mat_fullname(cw_mat));
+ 	} else {
+ 		render_text(px + 12, y, lightgraycolor, 0, "Pick an amount, then click an item.");
+ 	}
+-	render_text_fmt(px + 12, y + 12, graycolor, 0, "Your Smithing level: %d", cw_level);
++	render_text_fmt(px + 12, y + 12, graycolor, 0, "Your %s level: %d", cw_skill, cw_level);
+ }
+
+ void craftwin_display(void)
+@@ -607,22 +642,30 @@
+ 	render_set_clip(0, 0, XRES, YRES);
+
+ 	gui_draw_panel(px, py, CW_W + 1, CW_H + 1, CW_TITLE);
+-	render_text(px + CW_W / 2, py + 6, IRGB(31, 22, 6), RENDER_ALIGN_CENTER,
+-	    cw_station == 1 ? "What would you like to smelt?" : "What would you like to make?");
++	render_text(px + CW_W / 2, py + 6, IRGB(31, 22, 6), RENDER_ALIGN_CENTER, cw_title);
+ 	gui_draw_box(px + CW_W - 20, py + 2, px + CW_W - 4, py + 17, hov == C_CLOSE ? IRGB(16, 12, 6) : IRGB(8, 6, 3), edge);
+ 	render_text(px + CW_W - 12, py + 6, hov == C_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
+
+ 	render_set_clip(px + 1, py + 1, px + CW_W, py + CW_H);
+
+-	// metal tabs (anvil with more than one metal)
++	// material tabs (anvil metals, workbench logs ...)
+ 	if (cw_tabs()) {
+ 		for (b = 0; b < mat_cnt; b++) {
+-			int active = mat[b].nr == cw_mat;
++			int active = mat[b].nr == cw_mat, font = 0;
++			char text[64];
+ 			cw_tab_pos(b, &sx, &ex);
+ 			gui_draw_box(sx, py + CW_TABS, ex, py + CW_TABS + 14,
+ 			    active ? IRGB(18, 13, 6) : (hov == C_TAB + b ? IRGB(12, 9, 4) : IRGB(7, 5, 3)), edge);
+-			render_text_fmt((sx + ex) / 2, py + CW_TABS + 3, active || hov == C_TAB + b ? whitecolor : lightgraycolor,
+-			    RENDER_ALIGN_CENTER, "%s (%d)", mat[b].tab, mat[b].have);
++			// narrow tabs: small font, then without the count
++			snprintf(text, sizeof(text), "%s (%d)", mat[b].tab, mat[b].have);
++			if (render_text_len(0, text, -1) > ex - sx - 4) {
++				font = RENDER_TEXT_SMALL;
++			}
++			if (font && render_text_len(font, text, -1) > ex - sx - 4) {
++				snprintf(text, sizeof(text), "%s", mat[b].tab);
++			}
++			render_text((sx + ex) / 2, py + CW_TABS + 3 + (font ? 1 : 0), active || hov == C_TAB + b ? whitecolor : lightgraycolor,
++			    RENDER_ALIGN_CENTER | font, text);
+ 		}
+ 	}

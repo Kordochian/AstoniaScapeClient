@@ -1,0 +1,130 @@
+diff -ru a/src/gui/cmd.c b/src/gui/cmd.c
+--- a/src/gui/cmd.c	2026-10-13 03:22:37.601082760 +0000
++++ b/src/gui/cmd.c	2026-10-13 03:23:00.364144851 +0000
+@@ -385,14 +385,45 @@
+ 	}
+ }
+ 
++// The input line under the chat: a box that says how to start chatting while the
++// action keys are active, and holds the typed text while chatting.
++static void cmd_box(int *sx, int *sy, int *ex, int *ey)
++{
++	*sx = dotx(DOT_TXT) - 3;
++	*sy = doty(DOT_TX2) - 4;
++	*ex = dotx(DOT_TX2) + 2;
++	*ey = doty(DOT_TX2) + 9;
++}
++
++// x, y in chat panel coordinates
++int cmd_box_hit(int x, int y)
++{
++	int sx, sy, ex, ey;
++
++	cmd_box(&sx, &sy, &ex, &ey);
++	return x >= sx && x <= ex && y >= sy && y <= ey;
++}
++
+ void display_cmd(void)
+ {
+-	int n, x, tmp;
++	int n, x, tmp, sx, sy, ex, ey;
++
++	cmd_box(&sx, &sy, &ex, &ey);
+ 
+ 	if (!context_key_isset()) {
++		// ready: the action keys are active until the player clicks here or presses Enter
++		int hover = pnl_at(mousex, mousey) == PNL_CHAT && cmd_box_hit(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT));
++
++		render_rect_alpha(sx, sy, ex, ey, IRGB(2, 2, 2), 140);
++		gui_draw_box_outline(sx, sy, ex, ey, hover ? IRGB(26, 20, 8) : IRGB(14, 11, 6));
++		render_text((sx + ex) / 2, doty(DOT_TX2) - 1, hover ? whitecolor : graycolor, RENDER_ALIGN_CENTER,
++		    "<Click Here or Press Enter to Chat>");
+ 		return;
+ 	}
+ 
++	render_rect_alpha(sx, sy, ex, ey, IRGB(2, 2, 2), 140);
++	gui_draw_box_outline(sx, sy, ex, ey, context_key_enabled() ? IRGB(31, 26, 12) : IRGB(14, 11, 6));
++
+ 	if (cmdcursor < cmddisplay) {
+ 		cmddisplay = 0;
+ 	}
+diff -ru a/src/gui/dots.c b/src/gui/dots.c
+--- a/src/gui/dots.c	2026-10-13 03:22:37.602760796 +0000
++++ b/src/gui/dots.c	2026-10-13 03:23:00.366323965 +0000
+@@ -207,7 +207,7 @@
+ 	// chat text, as large as the chat panel
+ 	set_dot(DOT_TXT, 230, doty(DOT_BOT) + 8, 0);
+ 	set_dot(DOT_TX2, 221 + ccw, cch - 12, 0);
+-	__textdisplay_sy = cch - 20;
++	__textdisplay_sy = cch - 23; // keep clear of the boxed input line below
+ 	__textdisplay_sx = ccw - 7;
+ 
+ 	// skill list, 10 pixels per line; a container shown instead uses 40 pixel rows
+diff -ru a/src/gui/gui_input.c b/src/gui/gui_input.c
+--- a/src/gui/gui_input.c	2026-10-13 03:22:37.604347702 +0000
++++ b/src/gui/gui_input.c	2026-10-13 03:23:00.368226536 +0000
+@@ -294,6 +294,7 @@
+ {
+ 	int delta, tmp, mx, my;
+ 	static int mdown = 0;
++	static int chat_click = 0;
+ 
+ 	// SDL3 provides sub-pixel mouse precision via floats, but we work with discrete UI elements
+ 	// and tile-based positioning, so we convert to int immediately. Precision loss is negligible
+@@ -381,6 +382,14 @@
+ 			break;
+ 		}
+ 
++		// a click on the chat input box starts typing (the release is not passed on)
++		if (context_key_enabled() && !context_key_isset() && pnl_at(mousex, mousey) == PNL_CHAT &&
++		    cmd_box_hit(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT))) {
++			context_key_set(1);
++			chat_click = 1;
++			break;
++		}
++
+ 		if (butsel != -1 && capbut == -1 && (but[butsel].flags & BUTF_CAPTURE)) {
+ 			amod_mouse_capture(1);
+ 			SDL_HideCursor();
+@@ -411,6 +420,11 @@
+ 	case SDL_MOUM_LUP:
+ 		vk_lbut = 0;
+ 
++		if (chat_click) {
++			chat_click = 0;
++			break;
++		}
++
+ 		if (amod_mouse_click(mousex, mousey, what)) {
+ 			break;
+ 		}
+diff -ru a/src/gui/gui_private.h b/src/gui/gui_private.h
+--- a/src/gui/gui_private.h	2026-10-13 03:22:37.606271818 +0000
++++ b/src/gui/gui_private.h	2026-10-13 03:23:00.370470367 +0000
+@@ -496,6 +496,8 @@
+ 
+ // window drawing shared by the Options and Questlog windows (options.c)
+ void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border);
++void gui_draw_box_outline(int sx, int sy, int ex, int ey, unsigned short border);
++int cmd_box_hit(int x, int y);
+ void gui_draw_panel(int x, int y, int w, int h, int title_h);
+ 
+ // From panels.c: the top bar and bottom window cut into movable panels
+diff -ru a/src/gui/options.c b/src/gui/options.c
+--- a/src/gui/options.c	2026-10-13 03:22:48.554611955 +0000
++++ b/src/gui/options.c	2026-10-13 03:23:00.372266120 +0000
+@@ -796,6 +796,14 @@
+ 	}
+ }
+ 
++void gui_draw_box_outline(int sx, int sy, int ex, int ey, unsigned short border)
++{
++	render_line(sx, sy, ex, sy, border);
++	render_line(sx, ey, ex, ey, border);
++	render_line(sx, sy, sx, ey, border);
++	render_line(ex, sy, ex, ey + 1, border);
++}
++
+ void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border)
+ {
+ 	render_rect(sx, sy, ex, ey, fill);

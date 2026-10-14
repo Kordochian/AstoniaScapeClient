@@ -1,0 +1,512 @@
+diff -ru pre/src/game/game.h work/src/game/game.h
+--- a/src/game/game.h	2026-10-12 03:21:22.813705311 +0000
++++ b/src/game/game.h	2026-10-12 03:19:30.692997031 +0000
+@@ -263,6 +263,7 @@
+ void list_mem(void);
+ 
+ void display_game(void);
++void display_game_overlay(void);
+ 
+ void set_map_values(struct map *cmap, tick_t attick);
+ void quest_select(int nr);
+diff -ru pre/src/game/game_display.c work/src/game/game_display.c
+--- a/src/game/game_display.c	2026-10-12 03:21:22.813266393 +0000
++++ b/src/game/game_display.c	2026-10-12 03:19:19.091103804 +0000
+@@ -1511,6 +1511,11 @@
+ 	display_game_spells2();
+ 	display_game_map(map);
+ 	display_game_names();
++}
++
++// Text shown over the world at GUI positions; drawn after display_game() in GUI pixels
++void display_game_overlay(void)
++{
+ 	display_pents();
+ 	display_otext();
+ }
+diff -ru pre/src/gui/gui.h work/src/gui/gui.h
+--- a/src/gui/gui.h	2026-10-12 03:21:22.811759520 +0000
++++ b/src/gui/gui.h	2026-10-12 03:19:05.642006397 +0000
+@@ -50,6 +50,8 @@
+ void mtos(unsigned int mapx, unsigned int mapy, int *scrx, int *scry);
+ int stom(int scrx, int scry, int *mapx, int *mapy);
+ int gui_point_in_map(int x, int y);
++int gui_map_x(int x);
++int gui_map_y(int y);
+ void gui_layout_changed(void);
+ void set_mapoff(int cx, int cy, int mdx, int mdy);
+ void set_mapadd(int addx, int addy);
+diff -ru pre/src/gui/gui_core.c work/src/gui/gui_core.c
+--- a/src/gui/gui_core.c	2026-10-12 03:21:23.009566482 +0000
++++ b/src/gui/gui_core.c	2026-10-12 03:19:05.640493018 +0000
+@@ -286,7 +286,7 @@
+ 	set_skloff(0, 0);
+ 	set_conoff(0, 0);
+ 
+-	init_game(dotx(DOT_MCT), doty(DOT_MCT));
++	init_game(gui_map_x(dotx(DOT_MCT)), gui_map_y(doty(DOT_MCT)));
+ 
+ 	minimap_init();
+ 
+@@ -303,7 +303,7 @@
+ 	render_clear_clip(); // the base clipping rectangle is the whole game area
+ 	init_dots();
+ 	exit_game();
+-	init_game(dotx(DOT_MCT), doty(DOT_MCT));
++	init_game(gui_map_x(dotx(DOT_MCT)), gui_map_y(doty(DOT_MCT)));
+ 	minimap_layout();
+ 	note("Game area now %dx%d", XRES, YRES);
+ }
+@@ -417,12 +417,14 @@
+ 
+ 			if (sdl_is_shown() && (!(tick & 3) || !game_slowdown || sockstate != 4)) {
+ 				sdl_clear();
++				sdl_gui_pass();
+ 				display();
+ 				amod_frame();
+ 				display_mouseover();
+ 				questwin_display();
+ 				options_display();
+ 				minimap_update();
++				sdl_end_passes();
+ 			}
+ 
+ 			timediff = (int64_t)((unsigned int)nextframe - SDL_GetTicks());
+diff -ru pre/src/gui/gui_display.c work/src/gui/gui_display.c
+--- a/src/gui/gui_display.c	2026-10-12 03:21:22.810908167 +0000
++++ b/src/gui/gui_display.c	2026-10-12 03:19:19.090206714 +0000
+@@ -297,16 +297,21 @@
+ 
+ 	// The map fills the whole game area; the top bar and bottom window are drawn over it.
+ 	// Inside the 800 pixel GUI column the map stops at the bars as it always did.
++	// The world is drawn in map pixels, which differ from GUI pixels by the interface size.
++	sdl_map_pass();
+ 	render_push_clip();
+-	render_more_clip(0, 0, XRES, YRES);
++	render_set_clip(0, 0, sdl_map_xres, sdl_map_yres);
+ 	smoothcam_begin();
+ 	display_game();
+ 	smoothcam_end();
+ 	render_pop_clip();
++	sdl_gui_pass();
+ 	if (doty(DOT_MTL) > 0) {
+ 		render_rect(gui_dx, 0, gui_dx + XRES0, doty(DOT_MTL), blackcolor);
+ 	}
+-	render_rect(gui_dx, doty(DOT_MBR), gui_dx + XRES0, YRES, blackcolor);
++	// one extra line covers the rounding between map and GUI pixels
++	render_rect(gui_dx, doty(DOT_MBR), gui_dx + XRES0, YRES + 1, blackcolor);
++	display_game_overlay();
+ 
+ 	display_screen();
+ 
+diff -ru pre/src/gui/gui_input.c work/src/gui/gui_input.c
+--- a/src/gui/gui_input.c	2026-10-12 03:21:22.811004899 +0000
++++ b/src/gui/gui_input.c	2026-10-12 03:19:30.711671023 +0000
+@@ -8,6 +8,7 @@
+ #include <inttypes.h>
+ #include <time.h>
+ #include <ctype.h>
++#include <math.h>
+ #include <SDL3/SDL.h>
+ #include <SDL3/SDL_mouse.h>
+ #include <SDL3/SDL_stdinc.h>
+@@ -332,8 +333,9 @@
+ 			}
+ 		}
+ 
+-		mousex /= sdl_scale;
+-		mousey /= sdl_scale;
++		// window position to GUI pixels (graphics scale, then interface size)
++		mousex = (int)floorf(x / ((float)sdl_scale * sdl_ui_scale));
++		mousey = (int)floorf(y / ((float)sdl_scale * sdl_ui_scale));
+ 		mousex -= render_offset_x();
+ 		mousey -= render_offset_y();
+ 
+@@ -393,7 +395,8 @@
+ 
+ 		if (capbut != -1) {
+ 			sdl_set_cursor_pos(
+-			    (but[capbut].x + render_offset_x()) * sdl_scale, (but[capbut].y + render_offset_y()) * sdl_scale);
++			    (int)((but[capbut].x + render_offset_x()) * sdl_scale * sdl_ui_scale),
++			    (int)((but[capbut].y + render_offset_y()) * sdl_scale * sdl_ui_scale));
+ 			sdl_capture_mouse(0);
+ 			SDL_ShowCursor();
+ 			amod_mouse_capture(0);
+diff -ru pre/src/gui/gui_map.c work/src/gui/gui_map.c
+--- a/src/gui/gui_map.c	2026-10-12 03:21:22.811300038 +0000
++++ b/src/gui/gui_map.c	2026-10-12 03:19:05.641801626 +0000
+@@ -7,6 +7,7 @@
+ 
+ #include <inttypes.h>
+ #include <time.h>
++#include <math.h>
+ #include <SDL3/SDL.h>
+ 
+ #include "astonia.h"
+@@ -49,9 +50,21 @@
+ 	return x < gui_dx || x >= gui_dx + XRES0;
+ }
+ 
++// The world is drawn in map pixels: GUI pixels times the interface size factor
++int gui_map_x(int x)
++{
++	return (int)floorf((float)x * sdl_ui_scale + 0.5f);
++}
++
++int gui_map_y(int y)
++{
++	return (int)floorf((float)y * sdl_ui_scale + 0.5f);
++}
++
++// Screen position in map pixels to tile. Returns 0 if the position is not on the map.
+ int stom(int scrx, int scry, int *mapx, int *mapy)
+ {
+-	if (!gui_point_in_map(scrx, scry)) {
++	if (!gui_point_in_map((int)floorf((float)scrx / sdl_ui_scale), (int)floorf((float)scry / sdl_ui_scale))) {
+ 		return 0;
+ 	}
+ 
+@@ -70,6 +83,10 @@
+ 	int mapx, mapy;
+ 	unsigned int ux, uy;
+ 
++	// mouse position (GUI pixels) to map pixels
++	x = gui_map_x(x);
++	y = gui_map_y(y);
++
+ 	if (!stom(x, y, &mapx, &mapy)) {
+ 		return MAXMN;
+ 	}
+@@ -91,7 +108,11 @@
+ 	map_index_t mn, nearest = MAXMN;
+ 	double dist, nearestdist = 100000000;
+ 
+-	if (!stom(mousex, mousey, &mapx, &mapy)) {
++	// mouse position (GUI pixels) to map pixels
++	x = gui_map_x(x);
++	y = gui_map_y(y);
++
++	if (!stom(x, y, &mapx, &mapy)) {
+ 		return MAXMN;
+ 	}
+ 
+diff -ru pre/src/gui/options.c work/src/gui/options.c
+--- a/src/gui/options.c	2026-10-12 03:21:23.010538463 +0000
++++ b/src/gui/options.c	2026-10-12 03:20:04.563826123 +0000
+@@ -24,14 +24,15 @@
+ 
+ // panel size and layout, in game coordinates
+ #define PW 300
+-#define PH 216
++#define PH 234
+ 
+ #define ROW_SFX   40
+ #define ROW_MUSIC 58
+ #define ROW_MODE  104
+ #define ROW_RES   122
+ #define ROW_ZOOM  140
+-#define ROW_NOTE  164
++#define ROW_UI    158
++#define ROW_NOTE  182
+ 
+ #define CTRL_X 112 // left edge of the sliders and selectors
+ #define SLD_W  130 // slider width
+@@ -51,6 +52,8 @@
+ 	H_RES_R,
+ 	H_ZOOM_L,
+ 	H_ZOOM_R,
++	H_UI_L,
++	H_UI_R,
+ 	H_APPLY,
+ 	H_DONE,
+ };
+@@ -77,6 +80,22 @@
+ static const char *mode_key[] = {"windowed", "borderless", "fullscreen"};
+ static const char *zoom_name[] = {"Auto (largest)", "1x (see the most)", "2x", "3x", "4x"};
+ 
++// interface sizes in percent: the top bar and bottom window relative to the world
++static const int ui_sizes[] = {50, 60, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200};
++#define UI_SIZES ((int)(sizeof(ui_sizes) / sizeof(ui_sizes[0])))
++
++static int ui_size_index(void)
++{
++	int i, best = 0;
++
++	for (i = 1; i < UI_SIZES; i++) {
++		if (abs(ui_sizes[i] - sdl_ui_size) < abs(ui_sizes[best] - sdl_ui_size)) {
++			best = i;
++		}
++	}
++	return best;
++}
++
+ static void current_selection(void);
+ 
+ static int clampi(int v, int lo, int hi)
+@@ -154,6 +173,8 @@
+ 			h = atoi(val);
+ 		} else if (!strcmp(line, "zoom")) {
+ 			sdl_zoom = clampi(atoi(val), 0, 4);
++		} else if (!strcmp(line, "ui_size")) {
++			sdl_ui_size = clampi(atoi(val), 25, 400);
+ 		}
+ 	}
+ 	fclose(fp);
+@@ -195,6 +216,7 @@
+ 	fprintf(fp, "sfx_volume=%d\n", sfx_percent());
+ 	fprintf(fp, "music_volume=%d\n", music_volume);
+ 	fprintf(fp, "zoom=%d\n", sdl_zoom);
++	fprintf(fp, "ui_size=%d\n", sdl_ui_size);
+ 	if (have_gfx) {
+ 		fprintf(fp, "display_mode=%s\n", mode_key[clampi(cfg_mode, 0, 2)]);
+ 		if (cfg_mode != DISPMODE_BORDERLESS) {
+@@ -368,6 +390,12 @@
+ 	if (in_box(x, y, cx + SEL_W - 14, py + ROW_ZOOM - 2, cx + SEL_W, py + ROW_ZOOM + 11)) {
+ 		return H_ZOOM_R;
+ 	}
++	if (in_box(x, y, cx, py + ROW_UI - 2, cx + 14, py + ROW_UI + 11)) {
++		return H_UI_L;
++	}
++	if (in_box(x, y, cx + SEL_W - 14, py + ROW_UI - 2, cx + SEL_W, py + ROW_UI + 11)) {
++		return H_UI_R;
++	}
+ 	if (sel_mode != DISPMODE_BORDERLESS) {
+ 		if (in_box(x, y, cx, py + ROW_RES - 2, cx + 14, py + ROW_RES + 11)) {
+ 			return H_RES_L;
+@@ -456,6 +484,14 @@
+ 		sdl_zoom = (sdl_zoom + (what == H_ZOOM_L ? 4 : 1)) % 5;
+ 		options_save();
+ 		break;
++	case H_UI_L:
++	case H_UI_R: {
++		// the interface size changes right away; the panel moves with the new layout
++		int i = ui_size_index() + (what == H_UI_L ? -1 : 1);
++		sdl_set_ui_size(ui_sizes[clampi(i, 0, UI_SIZES - 1)]);
++		options_save();
++		break;
++	}
+ 	case H_APPLY:
+ 		apply_graphics();
+ 		break;
+@@ -678,6 +714,13 @@
+ 
+ 	draw_selector(ROW_ZOOM, "Zoom", zoom_name[clampi(sdl_zoom, 0, 4)], 1, hov == H_ZOOM_L, hov == H_ZOOM_R);
+ 
++	if ((int)(sdl_ui_scale * 100.0f + 0.5f) < sdl_ui_size) {
++		snprintf(buf, sizeof(buf), "%d%% (max %d%%)", sdl_ui_size, (int)(sdl_ui_scale * 100.0f + 0.5f));
++	} else {
++		snprintf(buf, sizeof(buf), "%d%%", sdl_ui_size);
++	}
++	draw_selector(ROW_UI, "Interface size", buf, 1, hov == H_UI_L, hov == H_UI_R);
++
+ 	// note
+ 	best = sdl_best_scale();
+ 	if (pending) {
+diff -ru pre/src/sdl/sdl.h work/src/sdl/sdl.h
+--- a/src/sdl/sdl.h	2026-10-12 03:21:23.078743520 +0000
++++ b/src/sdl/sdl.h	2026-10-12 03:18:37.541884525 +0000
+@@ -64,6 +64,13 @@
+ int sdl_set_game_size(int w, int h);
+ void sdl_refresh_layout(void);
+ extern int sdl_zoom;
++extern int sdl_ui_size;
++extern float sdl_ui_scale;
++extern int sdl_map_xres, sdl_map_yres;
++void sdl_set_ui_size(int percent);
++void sdl_map_pass(void);
++void sdl_gui_pass(void);
++void sdl_end_passes(void);
+ int sdl_best_scale(void);
+ 
+ void sdl_set_cursor(int cursor);
+diff -ru pre/src/sdl/sdl_core.c work/src/sdl/sdl_core.c
+--- a/src/sdl/sdl_core.c	2026-10-12 03:21:23.080248559 +0000
++++ b/src/sdl/sdl_core.c	2026-10-12 17:17:01.071894160 +0000
+@@ -59,6 +59,17 @@
+ // most this graphics scale. Smaller graphics show more of the world.
+ int sdl_zoom = 0;
+ 
++// Interface size chosen in the Options window, in percent. The top bar and the bottom window
++// are drawn this much larger or smaller than the world. sdl_ui_scale is the factor in use; it
++// can be lower than asked when the server's view range leaves no room for a larger interface.
++int sdl_ui_size = 100;
++float sdl_ui_scale = 1.0f;
++
++// The world is drawn in map pixels (GUI pixels * sdl_ui_scale), the interface in GUI pixels
++// (XRES x YRES). These are the size of the world picture and the centering offsets of both.
++int sdl_map_xres = XRES0, sdl_map_yres = YRES0;
++static int map_offx = 0, map_offy = 0, gui_offx = 0, gui_offy = 0;
++
+ // Display mode (DISPMODE_*). -1 means "decide from -w/-h/-o" as older clients did.
+ int sdl_display_mode = -1;
+ 
+@@ -795,17 +806,100 @@
+ 	sdl_update_presentation();
+ }
+ 
+-// Set the size of the game area (XRES x YRES), clamped to what the GUI needs and what the
+-// server sends. Returns 1 if it changed.
+-int sdl_set_game_size(int w, int h)
++// Interface factor that fits: the GUI's minimum size (800x450) times the factor must fit in
++// the window (nx x ny map pixels) and must not be larger than the largest world picture.
++// Asking for more gives the largest size that fits, so the world is never scaled down to make
++// room for the interface.
++static float sdl_fit_ui_scale(int nx, int ny)
+ {
+-	int ox = XRES, oy = YRES;
++	float u = (float)sdl_ui_size / 100.0f, m;
+ 
+-	XRES = w < XRES0 ? XRES0 : (w > XRESMAX ? XRESMAX : w);
+-	YRES = h < YRESMIN ? YRESMIN : (h > YRESMAX ? YRESMAX : h);
++	if (nx > 0 && ny > 0) {
++		m = (float)nx / XRES0;
++		if (u > m) {
++			u = m;
++		}
++		m = (float)ny / YRESMIN;
++		if (u > m) {
++			u = m;
++		}
++	}
++	if (u < 0.25f) {
++		u = 0.25f;
++	}
++	m = (float)XRESMAX / XRES0;
++	if (u > m) {
++		u = m;
++	}
++	m = (float)YRESMAX / YRESMIN;
++	if (u > m) {
++		u = m;
++	}
++	return u;
++}
++
++// Set the size of the world picture in map pixels, clamped to what the GUI needs and what the
++// server sends, and derive the GUI's size (XRES x YRES) from it using interface factor u.
++// Returns 1 if anything changed.
++static int sdl_set_game_size_u(int w, int h, float u)
++{
++	int ox = XRES, oy = YRES, omx = sdl_map_xres, omy = sdl_map_yres;
++	float ou = sdl_ui_scale;
++	int minx, miny;
++
++	sdl_ui_scale = u;
++	minx = (int)(XRES0 * u + 0.01f);
++	miny = (int)(YRESMIN * u + 0.01f);
++
++	sdl_map_xres = w < minx ? minx : (w > XRESMAX ? XRESMAX : w);
++	sdl_map_yres = h < miny ? miny : (h > YRESMAX ? YRESMAX : h);
++
++	XRES = (int)(sdl_map_xres / u + 0.001f);
++	YRES = (int)(sdl_map_yres / u + 0.001f);
++	if (XRES < XRES0) {
++		XRES = XRES0;
++	}
++	if (YRES < YRESMIN) {
++		YRES = YRESMIN;
++	}
+ 	gui_dx = (XRES - XRES0) / 2;
+ 
+-	return XRES != ox || YRES != oy;
++	return XRES != ox || YRES != oy || sdl_map_xres != omx || sdl_map_yres != omy || u != ou;
++}
++
++// Same for a window of w x h map pixels
++int sdl_set_game_size(int w, int h)
++{
++	return sdl_set_game_size_u(w, h, sdl_fit_ui_scale(w, h));
++}
++
++// Draw the world: map pixels, no extra scaling
++void sdl_map_pass(void)
++{
++	SDL_SetRenderScale(sdlren, 1.0f, 1.0f);
++	render_set_offset(map_offx, map_offy);
++}
++
++// Draw the interface: GUI pixels, scaled by the interface size. This is also the state between
++// frames, so mouse positions are worked out with the GUI offset.
++void sdl_gui_pass(void)
++{
++	SDL_SetRenderScale(sdlren, sdl_ui_scale, sdl_ui_scale);
++	render_set_offset(gui_offx, gui_offy);
++}
++
++// End of frame: SDL converts mouse events with the render scale, so leave it at 1
++void sdl_end_passes(void)
++{
++	SDL_SetRenderScale(sdlren, 1.0f, 1.0f);
++	render_set_offset(gui_offx, gui_offy);
++}
++
++// The Options window changed the interface size
++void sdl_set_ui_size(int percent)
++{
++	sdl_ui_size = percent;
++	sdl_update_presentation();
+ }
+ 
+ // Map the game's picture onto the window. The game area grows with the window so it is
+@@ -813,7 +907,8 @@
+ // needs, or larger than the server's view range, is the picture scaled to fit.
+ static void sdl_update_presentation(void)
+ {
+-	int w = 0, h = 0, gw, gh, nx, ny, changed;
++	int w = 0, h = 0, gw, gh, nx, ny, changed, minx, miny;
++	float u;
+ 	SDL_Texture *target;
+ 
+ 	if (!sdlren || !SDL_GetRenderOutputSize(sdlren, &w, &h) || w <= 0 || h <= 0) {
+@@ -823,22 +918,26 @@
+ 	nx = w / sdl_scale;
+ 	ny = h / sdl_scale;
+ 
+-	if (nx >= XRES0 && ny >= YRESMIN && nx <= XRESMAX && ny <= YRESMAX) {
+-		changed = sdl_set_game_size(nx, ny);
++	u = sdl_fit_ui_scale(nx, ny);
++	minx = (int)(XRES0 * u + 0.01f);
++	miny = (int)(YRESMIN * u + 0.01f);
++
++	if (nx >= minx && ny >= miny && nx <= XRESMAX && ny <= YRESMAX) {
++		changed = sdl_set_game_size_u(nx, ny, u);
+ 	} else {
+ 		// keep the window's shape: grow (small window) or shrink (huge window) the
+ 		// game area until it is inside the limits, then scale the picture
+ 		double k = 1.0;
+-		if (nx < XRES0 || ny < YRESMIN) {
+-			k = (double)XRES0 / nx > (double)YRESMIN / ny ? (double)XRES0 / nx : (double)YRESMIN / ny;
++		if (nx < minx || ny < miny) {
++			k = (double)minx / nx > (double)miny / ny ? (double)minx / nx : (double)miny / ny;
+ 		} else {
+ 			k = (double)XRESMAX / nx < (double)YRESMAX / ny ? (double)XRESMAX / nx : (double)YRESMAX / ny;
+ 		}
+-		changed = sdl_set_game_size((int)(nx * k + 0.5), (int)(ny * k + 0.5));
++		changed = sdl_set_game_size_u((int)(nx * k + 0.5), (int)(ny * k + 0.5), u);
+ 	}
+ 
+-	gw = XRES * sdl_scale;
+-	gh = YRES * sdl_scale;
++	gw = sdl_map_xres * sdl_scale;
++	gh = sdl_map_yres * sdl_scale;
+ 
+ 	target = SDL_GetRenderTarget(sdlren);
+ 	SDL_SetRenderTarget(sdlren, NULL);
+@@ -846,11 +945,15 @@
+ 	if (w >= gw && h >= gh && w - gw < sdl_scale * 2 && h - gh < sdl_scale * 2) {
+ 		// pixel for pixel; the leftover is less than one game pixel
+ 		SDL_SetRenderLogicalPresentation(sdlren, w, h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+-		render_set_offset((w / sdl_scale - XRES) / 2, (h / sdl_scale - YRES) / 2);
++		map_offx = (w / sdl_scale - sdl_map_xres) / 2;
++		map_offy = (h / sdl_scale - sdl_map_yres) / 2;
+ 	} else {
+ 		SDL_SetRenderLogicalPresentation(sdlren, gw, gh, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+-		render_set_offset(0, 0);
++		map_offx = map_offy = 0;
+ 	}
++	gui_offx = (int)(map_offx / sdl_ui_scale + 0.5f);
++	gui_offy = (int)(map_offy / sdl_ui_scale + 0.5f);
++	sdl_end_passes();
+ 
+ 	SDL_SetRenderTarget(sdlren, target);
+ 
