@@ -214,6 +214,7 @@ sanitizer: bin/moac-sanitizer
 
 bin/moac-sanitizer: USE_MIMALLOC=0
 bin/moac-sanitizer: $(OBJS_SANITIZER) $(ASTONIA_NET_LIB)
+	mkdir -p bin
 	cp $(ASTONIA_NET_LIB) bin/
 	$(CC) $(LDFLAGS) $(SANITIZER_FLAGS) -o bin/moac-sanitizer $(OBJS_SANITIZER) $(filter-out -lmimalloc,$(LIBS)) -Lbin -lastonia_net
 
@@ -228,6 +229,7 @@ src/lib/cjson/cJSON-sanitizer.o: src/lib/cjson/cJSON.c src/lib/cjson/cJSON.h
 coverage: bin/moac-coverage
 
 bin/moac-coverage: $(OBJS_COVERAGE) $(ASTONIA_NET_LIB)
+	mkdir -p bin
 	cp $(ASTONIA_NET_LIB) bin/
 	$(CC) $(LDFLAGS) $(COVERAGE_FLAGS) -o bin/moac-coverage $(OBJS_COVERAGE) $(LIBS) -Lbin -lastonia_net
 
