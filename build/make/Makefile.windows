@@ -261,6 +261,7 @@ OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui
 			src/lib/cjson/cJSON.o
 
 bin/moac.exe lib/moac.a lib/moac.lib:	verify-sdl3-mixer $(OBJS) $(ASTONIA_NET_LIB)
+			mkdir -p bin lib
 			$(CC) $(LDFLAGS) -Wl,--out-implib,lib/moac.a -o bin/moac.exe $(OBJS) $(ASTONIA_NET_LIB) $(LIBS)
 			@echo "Creating MSVC-compatible import library..."
 			@cp lib/moac.a lib/moac.lib
@@ -272,6 +273,7 @@ bin/moac.exe lib/moac.a lib/moac.lib:	verify-sdl3-mixer $(OBJS) $(ASTONIA_NET_LI
 			@ls -lh bin/moac.exe bin/astonia_net.dll lib/moac.a lib/moac.lib
 
 bin/moac_dbg.exe lib/moac_dbg.a:	$(OBJS) $(ASTONIA_NET_LIB)
+			mkdir -p bin lib
 			$(CC) $(LDFLAGS_CONSOLE) -Wl,--out-implib,lib/moac_dbg.a -o bin/moac_dbg.exe $(OBJS) $(ASTONIA_NET_LIB) $(LIBS)
 
 $(ASTONIA_NET_LIB):
