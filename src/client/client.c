@@ -25,7 +25,9 @@
 #include "modder/modder.h"
 #include "protocol.h"
 
-#define CLIENT_PROTOCOL_VERSION 11 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window, 10: effects tab, 11: combat style panel
+#define CLIENT_PROTOCOL_VERSION                                                                                        \
+	11 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech,
+	   // 9: workbench window, 10: effects tab, 11: combat style panel
 
 unsigned int display_gfx = 0;
 uint32_t display_time = 0;

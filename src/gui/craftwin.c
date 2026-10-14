@@ -257,7 +257,8 @@ void craftwin_receive(const unsigned char *buf, int len)
 	p = cw_string(buf, p, len, cw_tool, sizeof(cw_tool));
 	p = cw_string(buf, p, len, cw_stname, sizeof(cw_stname));
 	if (!cw_cmd[0]) { // older server: furnace or anvil
-		snprintf(cw_title, sizeof(cw_title), "%s", station == 1 ? "What would you like to smelt?" : "What would you like to make?");
+		snprintf(cw_title, sizeof(cw_title), "%s",
+		    station == 1 ? "What would you like to smelt?" : "What would you like to make?");
 		snprintf(cw_cmd, sizeof(cw_cmd), "%s", station == 1 ? "smelt" : "smith");
 		snprintf(cw_skill, sizeof(cw_skill), "Smithing");
 		snprintf(cw_tool, sizeof(cw_tool), "a hammer");
@@ -346,7 +347,8 @@ static int cw_hit(int x, int y)
 			}
 		}
 	}
-	if (x >= px + 12 && x < px + 12 + CW_COLS * CW_CELL_W && y >= py + CW_GRID && y < py + CW_GRID + CW_ROWS * CW_CELL_H) {
+	if (x >= px + 12 && x < px + 12 + CW_COLS * CW_CELL_W && y >= py + CW_GRID &&
+	    y < py + CW_GRID + CW_ROWS * CW_CELL_H) {
 		c = (x - px - 12) / CW_CELL_W;
 		r = (y - py - CW_GRID) / CW_CELL_H;
 		if ((cw_scroll + r) * CW_COLS + c < shown_cnt) {
@@ -596,8 +598,8 @@ static void cw_display_info(int px, int py, int hov)
 	if (hov >= C_CELL && cw_scroll * CW_COLS + hov - C_CELL < shown_cnt) {
 		const struct craft_recipe *rc = recipe + shown[cw_scroll * CW_COLS + hov - C_CELL];
 
-		render_text_fmt(px + 12, y, whitecolor, 0, "%s: level %d, %d XP each, needs %s.", rc->name, rc->level, rc->xp,
-		    rc->need);
+		render_text_fmt(
+		    px + 12, y, whitecolor, 0, "%s: level %d, %d XP each, needs %s.", rc->name, rc->level, rc->xp, rc->need);
 		if (cw_level < rc->level) {
 			render_text_fmt(px + 12, y + 12, red, 0, "You need %s level %d.", cw_skill, rc->level);
 		} else if (cw_flags & CRAFT_NOHAMMER) {
@@ -643,7 +645,8 @@ void craftwin_display(void)
 
 	gui_draw_panel(px, py, CW_W + 1, CW_H + 1, CW_TITLE);
 	render_text(px + CW_W / 2, py + 6, IRGB(31, 22, 6), RENDER_ALIGN_CENTER, cw_title);
-	gui_draw_box(px + CW_W - 20, py + 2, px + CW_W - 4, py + 17, hov == C_CLOSE ? IRGB(16, 12, 6) : IRGB(8, 6, 3), edge);
+	gui_draw_box(
+	    px + CW_W - 20, py + 2, px + CW_W - 4, py + 17, hov == C_CLOSE ? IRGB(16, 12, 6) : IRGB(8, 6, 3), edge);
 	render_text(px + CW_W - 12, py + 6, hov == C_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
 
 	render_set_clip(px + 1, py + 1, px + CW_W, py + CW_H);
@@ -664,8 +667,8 @@ void craftwin_display(void)
 			if (font && render_text_len(font, text, -1) > ex - sx - 4) {
 				snprintf(text, sizeof(text), "%s", mat[b].tab);
 			}
-			render_text((sx + ex) / 2, py + CW_TABS + 3 + (font ? 1 : 0), active || hov == C_TAB + b ? whitecolor : lightgraycolor,
-			    RENDER_ALIGN_CENTER | font, text);
+			render_text((sx + ex) / 2, py + CW_TABS + 3 + (font ? 1 : 0),
+			    active || hov == C_TAB + b ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER | font, text);
 		}
 	}
 

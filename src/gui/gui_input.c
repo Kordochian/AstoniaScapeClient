@@ -480,9 +480,8 @@ void gui_sdl_mouseproc(float x, float y, int what)
 				cbx = pnl_sx(cbp, cbx);
 				cby = pnl_sy(cbp, cby);
 			}
-			sdl_set_cursor_pos(
-			    (int)((cbx + render_offset_x()) * sdl_scale * sdl_ui_scale),
-			    (int)((cby + render_offset_y()) * sdl_scale * sdl_ui_scale));
+			sdl_set_cursor_pos((int)((float)(cbx + render_offset_x()) * (float)sdl_scale * sdl_ui_scale),
+			    (int)((float)(cby + render_offset_y()) * (float)sdl_scale * sdl_ui_scale));
 			sdl_capture_mouse(0);
 			SDL_ShowCursor();
 			amod_mouse_capture(0);
@@ -567,8 +566,7 @@ void gui_sdl_mouseproc(float x, float y, int what)
 
 		mx = pnl_mx(PNL_INVENTORY);
 		my = pnl_my(PNL_INVENTORY);
-		if (mx >= dotx(DOT_IN1) && mx < dotx(DOT_IN2) && my >= doty(DOT_IN1) &&
-		    my < doty(DOT_IN2)) { // inventory
+		if (mx >= dotx(DOT_IN1) && mx < dotx(DOT_IN2) && my >= doty(DOT_IN1) && my < doty(DOT_IN2)) { // inventory
 			while (delta > 0) {
 				set_invoff(0, invoff - 1);
 				delta--;

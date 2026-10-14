@@ -70,7 +70,7 @@ extern int sdl_map_xres, sdl_map_yres;
 void sdl_set_ui_size(int percent);
 extern int sdl_world_zoom;
 extern float sdl_world_scale;
-#define WORLD_ZOOM_MIN 50  // percent; how far out is also limited by the server's view range
+#define WORLD_ZOOM_MIN 50 // percent; how far out is also limited by the server's view range
 #define WORLD_ZOOM_MAX 300
 void sdl_set_world_zoom(int percent);
 int sdl_world_min_zoom(void);

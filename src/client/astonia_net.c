@@ -19,9 +19,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 typedef SOCKET sock_t;
-#define BAD_SOCK      INVALID_SOCKET
-#define close_sock    closesocket
-#define sock_errno()  WSAGetLastError()
+#define BAD_SOCK       INVALID_SOCKET
+#define close_sock     closesocket
+#define sock_errno()   WSAGetLastError()
 #define ERR_INPROGRESS WSAEWOULDBLOCK
 typedef int addrlen_t;
 #else
@@ -33,9 +33,9 @@ typedef int addrlen_t;
 #include <sys/socket.h>
 #include <unistd.h>
 typedef int sock_t;
-#define BAD_SOCK      (-1)
-#define close_sock    close
-#define sock_errno()  errno
+#define BAD_SOCK       (-1)
+#define close_sock     close
+#define sock_errno()   errno
 #define ERR_INPROGRESS EINPROGRESS
 typedef socklen_t addrlen_t;
 #endif

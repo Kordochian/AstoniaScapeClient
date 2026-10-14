@@ -65,6 +65,7 @@ char *localdata = NULL;
 int frames_per_second = 24; // == TICKS; sdl_init() reads/sets these for the smooth-camera FPS default
 int frames_per_second_auto = 1;
 int xmemcheck_failed = 0;
+unsigned int _client_dist = 25; // view distance (client.c); sdl_core.c sizes the world from it
 
 // SDL worker thread globals (defined in sdl_core.c, not here)
 // extern SDL_AtomicInt worker_quit;
@@ -83,6 +84,16 @@ void render_set_offset(int x __attribute__((unused)), int y __attribute__((unuse
 // ============================================================================
 // GUI stubs
 // ============================================================================
+
+void gui_layout_changed(void)
+{
+	// No-op in tests
+}
+
+void options_window_changed(void)
+{
+	// No-op in tests
+}
 
 void gui_sdl_mouseproc(float x __attribute__((unused)), float y __attribute__((unused)), int b __attribute__((unused)))
 {

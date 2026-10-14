@@ -57,16 +57,16 @@ struct panel {
 };
 
 static struct panel panel[MAX_PANEL] = {
-    {"level", "Level", 0, 0, 156},
-    {"equipment", "Equipment", 0, 156, 484},
-    {"menu", "Menu", 0, 640, 160},
+    {"level", "Level", 0, 0, 156, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {"equipment", "Equipment", 0, 156, 484, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {"menu", "Menu", 0, 640, 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
     // skill list: 10 pixels per line, 3 to MAXSKLROWS lines
-    {"skills", "Skills", 1, 0, 174, RS_H, 0, 0, 40, 10 + MAXSKLROWS * 10, 10},
-    {"status", "Effects", 1, 174, 47},
+    {"skills", "Skills", 1, 0, 174, RS_H, 0, 0, 40, 10 + MAXSKLROWS * 10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {"status", "Effects", 1, 174, 47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
     // chat: free size, at least 3 lines
-    {"chat", "Chat", 1, 221, 403, RS_W | RS_H, 200, 1400, 50, 650, 1},
+    {"chat", "Chat", 1, 221, 403, RS_W | RS_H, 200, 1400, 50, 650, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
     // inventory: 40 pixels per row, 1 to MAXINVROWS rows
-    {"inventory", "Inventory", 1, 624, 176, RS_H, 0, 0, 50, 10 + MAXINVROWS * 40, 40},
+    {"inventory", "Inventory", 1, 624, 176, RS_H, 0, 0, 50, 10 + MAXINVROWS * 40, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
 int panels_locked = 0;
@@ -121,38 +121,38 @@ int pnl_scale(int p)
 
 static float pnl_s(int p)
 {
-	return pnl_scale(p) / 100.0f;
+	return (float)pnl_scale(p) / 100.0f;
 }
 
 int pnl_sw(int p)
 {
-	return (int)(pnl_w(p) * pnl_s(p) + 0.5f);
+	return (int)((float)pnl_w(p) * pnl_s(p) + 0.5f);
 }
 
 int pnl_sh(int p)
 {
-	return (int)(pnl_h(p) * pnl_s(p) + 0.5f);
+	return (int)((float)pnl_h(p) * pnl_s(p) + 0.5f);
 }
 
 // Screen position to the panel's layout position and back
 int pnl_lx(int p, int x)
 {
-	return panel[p].x + (int)floorf((x - panel[p].x) / pnl_s(p));
+	return panel[p].x + (int)floorf((float)(x - panel[p].x) / pnl_s(p));
 }
 
 int pnl_ly(int p, int y)
 {
-	return panel[p].y + (int)floorf((y - panel[p].y) / pnl_s(p));
+	return panel[p].y + (int)floorf((float)(y - panel[p].y) / pnl_s(p));
 }
 
 int pnl_sx(int p, int x)
 {
-	return panel[p].x + (int)floorf((x - panel[p].x) * pnl_s(p) + 0.5f);
+	return panel[p].x + (int)floorf((float)(x - panel[p].x) * pnl_s(p) + 0.5f);
 }
 
 int pnl_sy(int p, int y)
 {
-	return panel[p].y + (int)floorf((y - panel[p].y) * pnl_s(p) + 0.5f);
+	return panel[p].y + (int)floorf((float)(y - panel[p].y) * pnl_s(p) + 0.5f);
 }
 
 // The mouse in panel p's layout, or far away when the mouse is not over that panel
@@ -203,7 +203,7 @@ int panels_bottom_row_y(void)
 static void fit_size(int p, int *w, int *h)
 {
 	struct panel *pn = &panel[p];
-	int sw = (int)(XRES / pnl_s(p)), sh = (int)(YRES / pnl_s(p)); // screen in layout pixels
+	int sw = (int)((float)XRES / pnl_s(p)), sh = (int)((float)YRES / pnl_s(p)); // screen in layout pixels
 
 	if (pn->resize & RS_W) {
 		*w = clampi(*w, pn->minw, pn->maxw);
@@ -266,8 +266,10 @@ static void store_anchor(int p)
 
 	panel[p].ax = cx < XRES / 3 ? 0 : (cx < XRES * 2 / 3 ? 1 : 2);
 	panel[p].ay = cy < YRES / 3 ? 0 : (cy < YRES * 2 / 3 ? 1 : 2);
-	panel[p].ox = panel[p].ax == 0 ? panel[p].x : (panel[p].ax == 1 ? panel[p].x - (XRES - w) / 2 : XRES - w - panel[p].x);
-	panel[p].oy = panel[p].ay == 0 ? panel[p].y : (panel[p].ay == 1 ? panel[p].y - (YRES - h) / 2 : YRES - h - panel[p].y);
+	panel[p].ox =
+	    panel[p].ax == 0 ? panel[p].x : (panel[p].ax == 1 ? panel[p].x - (XRES - w) / 2 : XRES - w - panel[p].x);
+	panel[p].oy =
+	    panel[p].ay == 0 ? panel[p].y : (panel[p].ay == 1 ? panel[p].y - (YRES - h) / 2 : YRES - h - panel[p].y);
 	panel[p].saved = 1;
 }
 
@@ -379,8 +381,8 @@ int panels_mouse(int what, int x, int y)
 			return 0;
 		}
 		if (sizing) {
-			w = (int)((x - drag_dx - panel[drag].x) / pnl_s(drag)) - PANEL_PAD * 2;
-			h = (int)((y - drag_dy - panel[drag].y) / pnl_s(drag)) - PANEL_TITLE - PANEL_PAD;
+			w = (int)((float)(x - drag_dx - panel[drag].x) / pnl_s(drag)) - PANEL_PAD * 2;
+			h = (int)((float)(y - drag_dy - panel[drag].y) / pnl_s(drag)) - PANEL_TITLE - PANEL_PAD;
 			fit_size(drag, &w, &h);
 			if (panel[drag].resize & RS_W) {
 				panel[drag].cw = w;
@@ -487,8 +489,8 @@ void panels_save_settings(void *vfp)
 	fprintf(fp, "ui_locked=%d\n", panels_locked);
 	for (p = 0; p < MAX_PANEL; p++) {
 		if (panel[p].saved) {
-			fprintf(fp, "panel_%s=%d,%d,%d,%d,%d,%d\n", panel[p].key, panel[p].ax, panel[p].ox, panel[p].ay, panel[p].oy,
-			    panel[p].cw, panel[p].ch);
+			fprintf(fp, "panel_%s=%d,%d,%d,%d,%d,%d\n", panel[p].key, panel[p].ax, panel[p].ox, panel[p].ay,
+			    panel[p].oy, panel[p].cw, panel[p].ch);
 		}
 		if (panel[p].scale) {
 			fprintf(fp, "pscale_%s=%d\n", panel[p].key, panel[p].scale);
@@ -528,8 +530,8 @@ void panels_display_frame(int p)
 	render_push_clip();
 	gui_draw_panel(panel[p].x, panel[p].y, pnl_w(p), pnl_h(p), PANEL_TITLE);
 	if ((p == drag && !sizing) || (p == hov && on_title(p, mousex, mousey))) {
-		render_rect_alpha(panel[p].x + 2, panel[p].y + 1, panel[p].x + pnl_w(p) - 2, panel[p].y + PANEL_TITLE - 1,
-		    whitecolor, 24);
+		render_rect_alpha(
+		    panel[p].x + 2, panel[p].y + 1, panel[p].x + pnl_w(p) - 2, panel[p].y + PANEL_TITLE - 1, whitecolor, 24);
 	}
 	if (pnl_w(p) >= 60) {
 		char buf[100];

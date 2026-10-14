@@ -445,8 +445,8 @@ void quest_select(int nr)
 
 // window size: can be changed with the grip in the bottom right corner; the text and controls
 // keep their size, the list shows more or fewer rows
-#define QW (qw_w < XRES - 1 ? qw_w : XRES - 1)
-#define QH (qw_h < YRES - 1 ? qw_h : YRES - 1)
+#define QW       (qw_w < XRES - 1 ? qw_w : XRES - 1)
+#define QH       (qw_h < YRES - 1 ? qw_h : YRES - 1)
 #define QW_MIN_W 300
 #define QW_MIN_H 200
 

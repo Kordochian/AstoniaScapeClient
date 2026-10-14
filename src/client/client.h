@@ -482,8 +482,9 @@ DLL_EXPORT extern uint32_t experience;
 DLL_EXPORT extern uint32_t experience_used;
 
 // use-based skills (protocol 5): the server sends its skill list and each skill's XP
-#define MAXCSKILL 128
+#define MAXCSKILL     128
 #define CSKILL_GROUPS 7 // power, attribute, combat, magic, gathering, production, support
+
 struct cskill {
 	int used; // defined by the server
 	int group; // 0..CSKILL_GROUPS-1
@@ -502,6 +503,7 @@ DLL_EXPORT extern int cskill_active; // server sent a skill list: skills level b
 // effects tab (protocol 10): what levels, gear and attributes add up to, as lines from the server
 #define MAXEFFLINE     64
 #define EFFLINE_GROUPS 5 // melee, magic, attributes, gathering, stealth
+
 struct effline {
 	int group; // 0..EFFLINE_GROUPS-1
 	char label[24];

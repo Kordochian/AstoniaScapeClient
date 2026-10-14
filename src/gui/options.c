@@ -26,20 +26,20 @@ extern int want_width, want_height;
 #define PW 300
 #define PH 522
 
-#define ROW_SFX   40
-#define ROW_MUSIC 58
-#define ROW_MODE  104
-#define ROW_RES   122
-#define ROW_ZOOM  140
-#define ROW_WZOOM 158
-#define ROW_UI    184
-#define ROW_PANELS 210
-#define ROW_PSCALE 228 // one row per panel, ZROW_H apart
-#define ROW_CHAT   410
+#define ROW_SFX     40
+#define ROW_MUSIC   58
+#define ROW_MODE    104
+#define ROW_RES     122
+#define ROW_ZOOM    140
+#define ROW_WZOOM   158
+#define ROW_UI      184
+#define ROW_PANELS  210
+#define ROW_PSCALE  228 // one row per panel, ZROW_H apart
+#define ROW_CHAT    410
 #define ROW_MINIMAP 428
-#define ROW_RESET  446
-#define ROW_NOTE  470
-#define ZROW_H     26 // zoom sliders have "Zoom out" / "Zoom in" under their ends
+#define ROW_RESET   446
+#define ROW_NOTE    470
+#define ZROW_H      26 // zoom sliders have "Zoom out" / "Zoom in" under their ends
 
 #define CTRL_X 112 // left edge of the sliders and selectors
 #define SLD_W  130 // slider width

@@ -433,8 +433,7 @@ static void detect_hover_target(void)
 	    my <= doty(DOT_TOP) + 30) {
 		butsel = BUT_QUEST;
 	}
-	if (mx >= dotx(DOT_TOP) + 704 && mx <= dotx(DOT_TOP) + 723 && my >= doty(DOT_TOP) + 7 &&
-	    my <= doty(DOT_TOP) + 18) {
+	if (mx >= dotx(DOT_TOP) + 704 && mx <= dotx(DOT_TOP) + 723 && my >= doty(DOT_TOP) + 7 && my <= doty(DOT_TOP) + 18) {
 		butsel = BUT_EXIT;
 	}
 	if (mx >= dotx(DOT_TOP) + OPTIONS_BUT_X && mx < dotx(DOT_TOP) + OPTIONS_BUT_X + OPTIONS_BUT_W &&
@@ -558,7 +557,8 @@ static void detect_hover_target(void)
 		for (i = 0; i <= BUT_SKL_END - BUT_SKL_BEG; i++) {
 			x = butx(i + BUT_SKL_BEG);
 			y = buty(i + BUT_SKL_BEG);
-			if (mx > x + (i == 0 && cskill_active ? 0 : 10) && mx < x + SKLWIDTH && my > y - 5 && my < y + 5) { // the tab line reaches its left edge
+			if (mx > x + (i == 0 && cskill_active ? 0 : 10) && mx < x + SKLWIDTH && my > y - 5 &&
+			    my < y + 5) { // the tab line reaches its left edge
 				sklsel2 = i;
 				break;
 			}
@@ -738,7 +738,8 @@ void exec_cmd(int cmd, int a)
 	case CMD_SKL_TAB:
 		// left half of the tab line opens Skills, right half Effects
 		if (sklsel2 != -1) {
-			int view = pnl_mx(PNL_SKILLS) < butx(BUT_SKL_BEG + sklsel2) + 4 + SKLWIDTH / 2 ? SKLVIEW_SKILLS : SKLVIEW_EFFECTS;
+			int view =
+			    pnl_mx(PNL_SKILLS) < butx(BUT_SKL_BEG + sklsel2) + 4 + SKLWIDTH / 2 ? SKLVIEW_SKILLS : SKLVIEW_EFFECTS;
 
 			if (view != skl_view) {
 				skl_view = view;
@@ -1367,13 +1368,14 @@ void set_cmd_states(void)
 		    actsel = -1;
 		mapsel = itmsel = chrsel = MAXMN;
 		lcmd = rcmd = CMD_NONE;
-		set_cmd_cursor(
-		    options_over_control(mousex, mousey) || (!options_over(mousex, mousey) && questwin_over_control(mousex, mousey)) ||
-		            (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) && craftwin_over_control(mousex, mousey)) ||
-		            (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) && !craftwin_over(mousex, mousey) &&
-		                stylewin_over_control(mousex, mousey))
-		        ? CMD_OPTIONS
-				: CMD_NONE);
+		set_cmd_cursor(options_over_control(mousex, mousey) ||
+		                       (!options_over(mousex, mousey) && questwin_over_control(mousex, mousey)) ||
+		                       (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) &&
+		                           craftwin_over_control(mousex, mousey)) ||
+		                       (!options_over(mousex, mousey) && !questwin_over(mousex, mousey) &&
+		                           !craftwin_over(mousex, mousey) && stylewin_over_control(mousex, mousey))
+		                   ? CMD_OPTIONS
+		                   : CMD_NONE);
 		return;
 	}
 

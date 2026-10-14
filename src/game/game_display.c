@@ -1446,7 +1446,8 @@ static void display_otext(void)
 			y = doty(DOT_MBR) - 20;
 		}
 
-		render_text(XRES / 2, y - cnt * 12, col, RENDER_TEXT_LARGE | RENDER_TEXT_FRAMED | RENDER_TEXT_CENTER, otext[n].text);
+		render_text(
+		    XRES / 2, y - cnt * 12, col, RENDER_TEXT_LARGE | RENDER_TEXT_FRAMED | RENDER_TEXT_CENTER, otext[n].text);
 		cnt++;
 	}
 }

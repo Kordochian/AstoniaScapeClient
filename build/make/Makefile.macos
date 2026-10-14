@@ -111,7 +111,7 @@ OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui
 			src/sdl/sdl_core.o src/sdl/sdl_texture.o src/sdl/sdl_image.o src/sdl/sdl_effects.o src/sdl/sdl_draw.o src/sdl/sound.o\
 			src/helper/helper.o\
 			src/gui/dots.o src/gui/display.o src/gui/teleport.o src/gui/color.o src/gui/cmd.o\
-			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o\
+			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o src/gui/craftwin.o src/gui/panels.o src/gui/stylewin.o\
 			src/game/memory_macos.o\
 			src/lib/cjson/cJSON.o
 

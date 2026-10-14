@@ -157,6 +157,7 @@ static void map_write_file(const char *filename, const unsigned char *src)
 	}
 	fclose(fp);
 }
+
 static void map_update_poi(void);
 static uint32_t map_poi_col(int x, int y);
 
@@ -857,8 +858,8 @@ static void minimap_round_display(void)
 
 	hov = mm_drag || mm_size || (!bw_over(mousex, mousey) && mm_over(mousex, mousey));
 	for (i = 0; i < sdl_scale; i++) {
-		sdl_render_circle((mx + mm_r + x_offset) * sdl_scale, (my + mm_r + y_offset) * sdl_scale,
-		    mm_r * sdl_scale + i, 0xffffffff);
+		sdl_render_circle(
+		    (mx + mm_r + x_offset) * sdl_scale, (my + mm_r + y_offset) * sdl_scale, mm_r * sdl_scale + i, 0xffffffff);
 	}
 	render_text(mx + mm_r, my + 4, 0xffff, 0, "N");
 	if (hov && !panels_locked) {
@@ -1463,7 +1464,6 @@ static uint32_t map_poi_col(int x, int y)
 		return IRGBA(64, 128, 64, 255);
 	}
 }
-
 
 void minimap_display_hover(int hx, int hy)
 {

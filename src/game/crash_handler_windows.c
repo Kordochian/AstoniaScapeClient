@@ -102,6 +102,7 @@ static void dbghelp_print_stack(CONTEXT *ctx, int *count)
 	STACKFRAME64 frame;
 	DWORD64 last_base = 0;
 	char modname[MAX_PATH];
+
 	union {
 		SYMBOL_INFO info;
 		char buf[sizeof(SYMBOL_INFO) + 256];

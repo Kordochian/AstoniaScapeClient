@@ -94,8 +94,7 @@ void display_mouseover(void)
 
 	mx = pnl_mx(PNL_MENU);
 	my = pnl_my(PNL_MENU);
-	if (mx >= dotx(DOT_TOP) + 728 && mx <= dotx(DOT_TOP) + 772 && my >= doty(DOT_TOP) + 7 &&
-	    my <= doty(DOT_TOP) + 17) {
+	if (mx >= dotx(DOT_TOP) + 728 && mx <= dotx(DOT_TOP) + 772 && my >= doty(DOT_TOP) + 7 && my <= doty(DOT_TOP) + 17) {
 		render_text_nl(
 		    mousex - 16, mousey - 4, 0xffff, RENDER_TEXT_BIG | RENDER_TEXT_FRAMED | RENDER_TEXT_RIGHT, hover_time_text);
 	}
@@ -727,8 +726,8 @@ static void display_hover_skill_xp(const SKLTAB *st)
 	if (need) {
 		render_text_fmt(sx + 4, sy, 0xffff, 0, "Next level at %s XP", nicenumber((int)min(cs->xp_next, 2000000000u)));
 		sy += 10;
-		render_text_fmt(sx + 4, sy, 0xffff, 0, "%s XP to go (%.1f%% done)", nicenumber((int)(need - done)),
-		    100.0 * done / need);
+		render_text_fmt(
+		    sx + 4, sy, 0xffff, 0, "%s XP to go (%.1f%% done)", nicenumber((int)(need - done)), 100.0 * done / need);
 	}
 }
 

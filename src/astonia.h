@@ -59,10 +59,10 @@ extern DLL_EXPORT unsigned int _client_dist;
 #define XRESMAX ((int)DIST * 40)
 #define YRESMIN 450
 #define YRESMAX ((int)DIST * 22)
-#define YRES0 600 // 4:3 aspect ratio
-#define YRES1 650 // Tall
-#define YRES2 500 // 16:10 aspect ratio
-#define YRES3 450 // 16:9 widescreen aspect ratio
+#define YRES0   600 // 4:3 aspect ratio
+#define YRES1   650 // Tall
+#define YRES2   500 // 16:10 aspect ratio
+#define YRES3   450 // 16:9 widescreen aspect ratio
 
 #ifndef bzero
 #define bzero(ptr, size) memset(ptr, 0, size)

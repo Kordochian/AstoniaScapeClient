@@ -190,9 +190,11 @@ void stylewin_display(void)
 		render_circle_filled_alpha(px + 10, y + 7, 4, col, 255);
 		render_circle_alpha(px + 10, y + 7, 4, dark, 255);
 
-		render_text(px + 20, y + 2, sel || hov == r ? whitecolor : textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, sw_name[r]);
+		render_text(
+		    px + 20, y + 2, sel || hov == r ? whitecolor : textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, sw_name[r]);
 		if (r && (lvl = sw_level(sw_name[r])) > 0) {
-			render_text_fmt(px + SW_W - 8, y + 2, sel ? whitecolor : textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, "%d", lvl);
+			render_text_fmt(
+			    px + SW_W - 8, y + 2, sel ? whitecolor : textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, "%d", lvl);
 		}
 
 		// the bar under the row: full blue when selected, red otherwise

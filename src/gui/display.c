@@ -173,7 +173,6 @@ void display_wear(void)
 			dx_drawtext_gold(x, y + 12, textcolor, (int)itemprice[weatab[i]]);
 		}
 	}
-
 }
 
 // The menu panel: gear lock, Options button and clock
@@ -422,8 +421,8 @@ void display_gold(void)
 void display_junk(void)
 {
 	if (vk_item || csprite) {
-		render_sprite(25, but[BUT_JNK].x, but[BUT_JNK].y, lcmd == CMD_JUNK_ITEM ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
-		    RENDER_ALIGN_CENTER);
+		render_sprite(25, but[BUT_JNK].x, but[BUT_JNK].y,
+		    lcmd == CMD_JUNK_ITEM ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_CENTER);
 	}
 }
 
@@ -570,7 +569,8 @@ void display_skill(void)
 				if (open) {
 					render_rect(tx[t] - 3, yt - 2, tx[t] + tw[t] + 3, bsy + 3, darkgraycolor);
 				}
-				render_text(tx[t], yt, open ? lightorangecolor : graycolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, tname[t]);
+				render_text(
+				    tx[t], yt, open ? lightorangecolor : graycolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, tname[t]);
 			}
 			render_rect(bsx - 9, bsy + 3, bex, bsy + 4, darkgraycolor);
 			continue;
@@ -721,9 +721,8 @@ void display_keys(void)
 			sprintf(buf, "%c %s", keytab[i].keycode, keytab[i].name);
 		}
 
-		render_text(
-		    dotx(DOT_BOT) + x, doty(DOT_BOT) - PANEL_TITLE - 6, col, RENDER_TEXT_LEFT | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
-		    buf);
+		render_text(dotx(DOT_BOT) + x, doty(DOT_BOT) - PANEL_TITLE - 6, col,
+		    RENDER_TEXT_LEFT | RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED, buf);
 	}
 }
 
@@ -1150,8 +1149,8 @@ void display_exp(void)
 
 		render_push_clip();
 		render_more_clip(0, 0, dots_level_x() + 31 + 100 - (int)(100ll * step / total), dots_level_y() + 8 + 7);
-		render_sprite(996, dots_level_x() + 31, dots_level_y() + 7, exp_ticker ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT,
-		    RENDER_ALIGN_NORMAL);
+		render_sprite(996, dots_level_x() + 31, dots_level_y() + 7,
+		    exp_ticker ? RENDERFX_BRIGHT : RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
 		render_pop_clip();
 
 		if (exp_ticker) {
@@ -1387,7 +1386,8 @@ static char *v3_action_desc[MAXACTIONSLOT] = {"Attacks another character using y
     "Deals high damage to adjacent enemies.",
     "Interact with items. Can be used to take or use an item on the ground, or to drop or give an item on your mouse "
     "cursor.",
-    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).", "Look at characters or items in the world."};
+    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).",
+    "Look at characters or items in the world."};
 
 static int v3_action_skill[MAXACTIONSLOT] = {V3_PERCEPT, V3_FIREBALL, V3_FLASH, V3_FLASH, V3_FREEZE, V3_MAGICSHIELD,
     V3_BLESS, V3_HEAL, V3_WARCRY, V3_PULSE, V3_FIREBALL, V3_PERCEPT, -1, -1};
@@ -1410,7 +1410,8 @@ static char *v35_action_desc[MAXACTIONSLOT] = {"Attacks another character using 
     "NOOP", "Deals high damage to adjacent enemies.",
     "Interact with items. Can be used to take or use an item on the ground, or to drop or give an item on your mouse "
     "cursor.",
-    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).", "Look at characters or items in the world."};
+    "Opens or closes the big map of the area (also Ctrl+Shift+M or a click on the minimap).",
+    "Look at characters or items in the world."};
 
 static int v35_action_skill[MAXACTIONSLOT] = {V35_PERCEPT, V35_FIRE, V35_FLASH, V35_FLASH, V35_FREEZE, V35_MAGICSHIELD,
     V35_BLESS, V35_HEAL, V35_WARCRY, -2, V35_FIRE, V35_PERCEPT, -1, -1};

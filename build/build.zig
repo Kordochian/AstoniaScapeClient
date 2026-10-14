@@ -54,6 +54,9 @@ pub fn build(b: *std.Build) void {
         "src/gui/context.c",
         "src/gui/hover.c",
         "src/gui/minimap.c",
+        "src/gui/craftwin.c",
+        "src/gui/panels.c",
+        "src/gui/stylewin.c",
 
         // CLIENT
         "src/client/client.c",

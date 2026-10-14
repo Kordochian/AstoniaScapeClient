@@ -844,17 +844,23 @@ static float sdl_fit_ui_scale(int nx, int ny)
 	return u;
 }
 
+// exact change test for scale values (a != b without -Wfloat-equal)
+static int float_differs(float a, float b)
+{
+	return a < b || a > b;
+}
+
 // World scale for the chosen world zoom. Zooming out is limited so the world picture never
 // gets bigger than what the server sends (XRESMAX x YRESMAX), past that it would only be black.
 static float sdl_world_scale_for(int percent)
 {
-	float s = percent / 100.0f, m;
+	float s = (float)percent / 100.0f, m;
 
-	m = (float)sdl_map_xres / XRESMAX;
+	m = (float)sdl_map_xres / (float)XRESMAX;
 	if (s < m) {
 		s = m;
 	}
-	m = (float)sdl_map_yres / YRESMAX;
+	m = (float)sdl_map_yres / (float)YRESMAX;
 	if (s < m) {
 		s = m;
 	}
@@ -885,8 +891,8 @@ static int sdl_set_game_size_u(int w, int h, float u)
 	sdl_map_xres = w < minx ? minx : (w > XRESMAX ? XRESMAX : w);
 	sdl_map_yres = h < miny ? miny : (h > YRESMAX ? YRESMAX : h);
 
-	XRES = (int)(sdl_map_xres / u + 0.001f);
-	YRES = (int)(sdl_map_yres / u + 0.001f);
+	XRES = (int)((float)sdl_map_xres / u + 0.001f);
+	YRES = (int)((float)sdl_map_yres / u + 0.001f);
 	if (XRES < XRES0) {
 		XRES = XRES0;
 	}
@@ -896,7 +902,8 @@ static int sdl_set_game_size_u(int w, int h, float u)
 	gui_dx = (XRES - XRES0) / 2;
 	sdl_world_scale = sdl_world_scale_for(sdl_world_zoom);
 
-	return XRES != ox || YRES != oy || sdl_map_xres != omx || sdl_map_yres != omy || u != ou || sdl_world_scale != os;
+	return XRES != ox || YRES != oy || sdl_map_xres != omx || sdl_map_yres != omy || float_differs(u, ou) ||
+	       float_differs(sdl_world_scale, os);
 }
 
 // Same for a window of w x h map pixels
@@ -924,8 +931,8 @@ static void sdl_world_flush(void)
 	SDL_SetRenderScale(sdlren, 1.0f, 1.0f);
 	dr.x = (float)(map_offx * sdl_scale);
 	dr.y = (float)(map_offy * sdl_scale);
-	dr.w = world_tex_w * sdl_world_scale;
-	dr.h = world_tex_h * sdl_world_scale;
+	dr.w = (float)world_tex_w * sdl_world_scale;
+	dr.h = (float)world_tex_h * sdl_world_scale;
 	SDL_RenderTexture(sdlren, world_tex, NULL, &dr);
 }
 
@@ -963,7 +970,8 @@ void sdl_map_pass(void)
 		}
 		// no texture: let SDL enlarge each sprite instead
 		SDL_SetRenderScale(sdlren, sdl_world_scale, sdl_world_scale);
-		render_set_offset((int)(map_offx / sdl_world_scale + 0.5f), (int)(map_offy / sdl_world_scale + 0.5f));
+		render_set_offset(
+		    (int)((float)map_offx / sdl_world_scale + 0.5f), (int)((float)map_offy / sdl_world_scale + 0.5f));
 		return;
 	}
 
@@ -974,12 +982,12 @@ void sdl_map_pass(void)
 // Size of the world picture in world pixels
 int sdl_world_xres(void)
 {
-	return (int)(sdl_map_xres / sdl_world_scale + 0.999f);
+	return (int)((float)sdl_map_xres / sdl_world_scale + 0.999f);
 }
 
 int sdl_world_yres(void)
 {
-	return (int)(sdl_map_yres / sdl_world_scale + 0.999f);
+	return (int)((float)sdl_map_yres / sdl_world_scale + 0.999f);
 }
 
 // The Options window changed the world zoom. The map is re-centered for the new size.
@@ -995,7 +1003,7 @@ void sdl_set_world_zoom(int percent)
 	}
 	sdl_world_zoom = percent;
 	s = sdl_world_scale_for(percent);
-	if (sdl_world_scale != s) {
+	if (float_differs(sdl_world_scale, s)) {
 		sdl_world_scale = s;
 		if (sdlren) {
 			gui_layout_changed();
@@ -1018,7 +1026,8 @@ void sdl_panel_pass(float s, int ox, int oy)
 {
 	sdl_world_flush();
 	SDL_SetRenderScale(sdlren, sdl_ui_scale * s, sdl_ui_scale * s);
-	render_set_offset((int)SDL_floorf((ox + gui_offx) / s - ox + 0.5f), (int)SDL_floorf((oy + gui_offy) / s - oy + 0.5f));
+	render_set_offset((int)SDL_floorf((float)(ox + gui_offx) / s - (float)ox + 0.5f),
+	    (int)SDL_floorf((float)(oy + gui_offy) / s - (float)oy + 0.5f));
 }
 
 // End of frame: SDL converts mouse events with the render scale, so leave it at 1
@@ -1085,8 +1094,8 @@ static void sdl_update_presentation(void)
 		SDL_SetRenderLogicalPresentation(sdlren, gw, gh, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 		map_offx = map_offy = 0;
 	}
-	gui_offx = (int)(map_offx / sdl_ui_scale + 0.5f);
-	gui_offy = (int)(map_offy / sdl_ui_scale + 0.5f);
+	gui_offx = (int)((float)map_offx / sdl_ui_scale + 0.5f);
+	gui_offy = (int)((float)map_offy / sdl_ui_scale + 0.5f);
 	sdl_end_passes();
 
 	SDL_SetRenderTarget(sdlren, target);
