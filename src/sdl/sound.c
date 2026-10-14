@@ -58,7 +58,6 @@ static channel_state_t channel_states[MAX_SOUND_CHANNELS];
 
 // Mapping table: sound_id -> path string (NULL if not mapped)
 static char *sound_map[MAX_SOUND_ID];
-static int sound_map_loaded = 0;
 
 // Legacy fallback table for backwards compatibility (used if no sounds.json)
 static const char *sfx_fallback[] = {
@@ -118,7 +117,6 @@ static int sfx_fallback_cnt = (int)(sizeof(sfx_fallback) / sizeof(sfx_fallback[0
 
 int sound_volume = 128;
 DLL_EXPORT int music_volume = 100;
-static uint64_t time_play_sound = 0;
 
 static MIX_Audio *sound_effect[MAXSOUND];
 
@@ -280,8 +278,6 @@ static void load_sound_mappings(void)
 			}
 		}
 	}
-
-	sound_map_loaded = 1;
 }
 
 /**
@@ -307,7 +303,6 @@ static void free_sound_mappings(void)
 			sound_map[i] = NULL;
 		}
 	}
-	sound_map_loaded = 0;
 }
 
 int init_sound(void)
@@ -458,7 +453,6 @@ static void play_sdl_sound(unsigned int nr, int distance, int angle);
 static void play_sdl_sound(unsigned int nr, int distance, int angle)
 {
 	static int sound_channel = 0;
-	uint64_t time_start;
 
 	// Check if sound is enabled
 	if (!(game_options & GO_SOUND)) {
@@ -474,7 +468,6 @@ static void play_sdl_sound(unsigned int nr, int distance, int angle)
 	}
 
 	// For debugging/optimization
-	time_start = SDL_GetTicks();
 
 #if 0
 	const char *path = get_sound_path(nr);
@@ -512,9 +505,6 @@ static void play_sdl_sound(unsigned int nr, int distance, int angle)
 	if (sound_channel >= MAX_SOUND_CHANNELS) {
 		sound_channel = 0;
 	}
-
-	// For debug/optimization
-	time_play_sound += SDL_GetTicks() - time_start;
 
 	return;
 }
