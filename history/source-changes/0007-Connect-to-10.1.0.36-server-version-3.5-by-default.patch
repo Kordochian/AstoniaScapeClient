@@ -1,0 +1,63 @@
+From 85092ae95daecc5b1af66c450a12a91e5ed7bb1b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 08:19:40 +0000
+Subject: [PATCH] Connect to 10.1.0.36, server version 3.5, by default
+
+Without -d and -v the client now goes to the 10.1.0.36 server as a 3.5
+client. Both can still be overridden on the command line, and the
+defaults are DEFAULT_SERVER / DEFAULT_SV_VER in main.c.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ src/game/main.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/src/game/main.c b/src/game/main.c
+index 95ce983..d6a1ac4 100644
+--- a/src/game/main.c
++++ b/src/game/main.c
+@@ -43,7 +43,16 @@ void init_logging(void);
+ void determine_resolution(void);
+ 
+ int quit = 0;
+-int sv_ver = 30;
++// Server this build connects to when no -d / -v is given. To use another server,
++// change the address here and rebuild, or start the client with -d<address>.
++#ifndef DEFAULT_SERVER
++#define DEFAULT_SERVER "10.1.0.36"
++#endif
++#ifndef DEFAULT_SV_VER
++#define DEFAULT_SV_VER 35
++#endif
++
++int sv_ver = DEFAULT_SV_VER;
+ 
+ char *localdata;
+ 
+@@ -257,9 +266,11 @@ void display_usage(void)
+ {
+ 	const char *help =
+ 	    "The Astonia Client can only be started from the command line or with a specially created shortcut.\n\n"
+-	    "Usage: moac -u playername -p password -d url\n ... [-w width] [-h height]\n"
++	    "Usage: moac -u playername -p password [-d url] [-v version]\n ... [-w width] [-h height]\n"
+ 	    " ... [-m threads] [-o options]\n ... [-k framespersecond]\n\n"
+-	    "url being, for example, \"server.astonia.com\" or \"192.168.77.132\" (without the quotes).\n\n"
++	    "url being, for example, \"server.astonia.com\" or \"192.168.77.132\" (without the quotes). "
++	    "Default: " DEFAULT_SERVER ".\n\n"
++	    "version is the server version, 30 or 35. Default: 35.\n\n"
+ 	    "width and height are the desired window size. If this matches the desktop size the client "
+ 	    "will start in windowed borderless pseudo-fullscreen mode.\n\n"
+ 	    "threads is the number of background threads the game should use. Use 0 to disable. Default is 4.\n\n"
+@@ -283,7 +294,7 @@ void display_usage(void)
+ 	printf("%s", help);
+ }
+ 
+-DLL_EXPORT char server_url[256];
++DLL_EXPORT char server_url[256] = DEFAULT_SERVER;
+ DLL_EXPORT int server_port = 0;
+ DLL_EXPORT int want_width = 0;
+ DLL_EXPORT int want_height = 0;
+-- 
+2.43.0
+

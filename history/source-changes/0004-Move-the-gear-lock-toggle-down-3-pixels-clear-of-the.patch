@@ -1,0 +1,28 @@
+From e66880420e86249d7315642b58f5cad52900c0f2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 07:48:54 +0000
+Subject: [PATCH] Move the gear lock toggle down 3 pixels, clear of the Options
+ button
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ src/gui/dots.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gui/dots.c b/src/gui/dots.c
+index 0ab5a44..a65c69e 100644
+--- a/src/gui/dots.c
++++ b/src/gui/dots.c
+@@ -218,7 +218,7 @@ void init_dots(void)
+ 		set_but(BUT_ACT_BEG + i, dot[DOT_ACT].x + i * 40, dot[DOT_ACT].y, 18, 0);
+ 	}
+ 
+-	set_but(BUT_WEA_LCK, dot[DOT_WEA].x + 12 * FDX - 12, dot[DOT_WEA].y + 4, 18, !stop ? 0 : BUTF_TOPOFF);
++	set_but(BUT_WEA_LCK, dot[DOT_WEA].x + 12 * FDX - 12, dot[DOT_WEA].y + 7, 18, !stop ? 0 : BUTF_TOPOFF);
+ 	set_but(BUT_ACT_LCK, dot[DOT_ACT].x - 40, dot[DOT_ACT].y, 18, 0);
+ 	set_but(BUT_ACT_OPN, dot[DOT_ACT].x + MAXACTIONSLOT * 40, dot[DOT_ACT].y, 18, 0);
+ 
+-- 
+2.43.0
+

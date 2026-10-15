@@ -1,0 +1,203 @@
+diff --git a/src/game/game.h b/src/game/game.h
+index a46b6e7..827d804 100644
+--- a/src/game/game.h
++++ b/src/game/game.h
+@@ -220,6 +220,9 @@ void render_text_pageup(void);
+ void render_text_pagedown(void);
+ void render_text_lineup(void);
+ void render_text_linedown(void);
++int render_text_scrolled_up(void);
++int render_text_unseen(void);
++void render_text_bottom(void);
+ int render_scantext(int x, int y, char *hit);
+ void render_list_text(void);
+ 
+diff --git a/src/game/render.c b/src/game/render.c
+index dcdc18d..d0696b5 100644
+--- a/src/game/render.c
++++ b/src/game/render.c
+@@ -1512,6 +1512,7 @@ int render_char_len(char c)
+ #define TEXTDISPLAYLINES (TEXTDISPLAY_SY / TEXTDISPLAY_DY)
+ 
+ int textnextline = 0, textdisplayline = 0, textlines = 0;
++static int text_unseen = 0; // messages that arrived while the chat was scrolled up
+ 
+ struct letter {
+ 	char c;
+@@ -1566,6 +1567,7 @@ void render_set_textfont(int nr)
+ 	}
+ 	bzero(text, MAXTEXTLINES * MAXTEXTLETTERS * sizeof(struct letter));
+ 	textnextline = textdisplayline = textlines = 0;
++	text_unseen = 0;
+ }
+ 
+ /**
+@@ -1734,6 +1736,10 @@ void render_add_text(char *ptr)
+ 		textdisplayline = (textdisplayline + 1) % MAXTEXTLINES;
+ 	}
+ 	textlines++;
++
++	if (render_text_scrolled_up()) {
++		text_unseen++;
++	}
+ }
+ 
+ int render_text_init_done(void)
+@@ -1865,6 +1871,31 @@ void render_text_linedown(void)
+ 
+ 	// Move display one line down (toward newer text)
+ 	textdisplayline = (textdisplayline + 1) % MAXTEXTLINES;
++
++	if (!render_text_scrolled_up()) {
++		text_unseen = 0;
++	}
++}
++
++// true when the chat is not showing the newest line
++int render_text_scrolled_up(void)
++{
++	return textlines > TEXTDISPLAYLINES && (textdisplayline + TEXTDISPLAYLINES) % MAXTEXTLINES != textnextline;
++}
++
++// number of messages that arrived while scrolled up
++int render_text_unseen(void)
++{
++	return text_unseen;
++}
++
++// jump straight to the newest line
++void render_text_bottom(void)
++{
++	if (textlines > TEXTDISPLAYLINES) {
++		textdisplayline = (textnextline + MAXTEXTLINES - TEXTDISPLAYLINES) % MAXTEXTLINES;
++	}
++	text_unseen = 0;
+ }
+ 
+ void render_text_pageup(void)
+diff --git a/src/gui/craftwin.c b/src/gui/craftwin.c
+index f675893..d4b5175 100644
+--- a/src/gui/craftwin.c
++++ b/src/gui/craftwin.c
+@@ -517,9 +517,12 @@ static void cw_display_grid(int px, int py, int hov)
+ 		y = py + CW_GRID + r * CW_CELL_H;
+ 		cx = x + CW_CELL_W / 2;
+ 
++		// each item sits in its own box; the hovered one lights up
+ 		if (hov == C_CELL + r * CW_COLS + c) {
+-			render_rect_alpha(x + 1, y + 1, x + CW_CELL_W - 2, y + CW_CELL_H - 2, ok ? IRGB(18, 13, 6) : IRGB(10, 8, 4),
+-			    120);
++			gui_draw_box(x + 2, y + 1, x + CW_CELL_W - 3, y + CW_CELL_H - 3, ok ? IRGB(14, 10, 5) : IRGB(9, 7, 4),
++			    ok ? IRGB(28, 22, 10) : IRGB(16, 12, 6));
++		} else {
++			gui_draw_box(x + 2, y + 1, x + CW_CELL_W - 3, y + CW_CELL_H - 3, IRGB(5, 4, 2), IRGB(14, 11, 6));
+ 		}
+ 
+ 		cw_icon(rc->sprite, cx, y + 17, !ok);
+diff --git a/src/gui/display.c b/src/gui/display.c
+index d41e6d8..6a358a3 100644
+--- a/src/gui/display.c
++++ b/src/gui/display.c
+@@ -815,11 +815,72 @@ void display_screen(void)
+ 	sprintf(hover_time_text, "%02d:%02d Astonia Standard Time", h, m);
+ }
+ 
++// "jump to latest" button, bottom right of the chat text, shown while scrolled up
++static const char *chat_latest_label(char *buf, size_t size)
++{
++	int n = render_text_unseen();
++
++	if (n > 0) {
++		snprintf(buf, size, "%d new message%s - click for latest", n, n == 1 ? "" : "s");
++	} else {
++		snprintf(buf, size, "Scrolled up - click for latest");
++	}
++	return buf;
++}
++
++static void chat_latest_rect(int *sx, int *sy, int *ex, int *ey)
++{
++	char buf[80];
++
++	*ex = dotx(DOT_TXT) + __textdisplay_sx - 2;
++	*ey = doty(DOT_TXT) + __textdisplay_sy - 1;
++	*sx = *ex - render_text_len(0, chat_latest_label(buf, sizeof(buf)), -1) - 22;
++	*sy = *ey - 14;
++}
++
++// mx, my in chat panel coordinates (pnl_mx/pnl_my)
++int chat_latest_hit(int mx, int my)
++{
++	int sx, sy, ex, ey;
++
++	if (!render_text_scrolled_up()) {
++		return 0;
++	}
++	chat_latest_rect(&sx, &sy, &ex, &ey);
++	return mx >= sx && mx <= ex && my >= sy && my <= ey;
++}
++
++static void display_chat_latest(void)
++{
++	int sx, sy, ex, ey, hov, ax, ay, i;
++	char buf[80];
++	unsigned short col;
++
++	if (!render_text_scrolled_up()) {
++		return;
++	}
++	chat_latest_rect(&sx, &sy, &ex, &ey);
++	hov = chat_latest_hit(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT));
++	col = render_text_unseen() ? IRGB(31, 28, 12) : IRGB(26, 24, 20);
++
++	gui_draw_box(sx, sy, ex, ey, hov ? IRGB(16, 12, 6) : IRGB(7, 5, 3), hov ? IRGB(28, 22, 10) : IRGB(20, 16, 8));
++
++	// small down arrow
++	ax = sx + 8;
++	ay = sy + 5;
++	for (i = 0; i < 4; i++) {
++		render_line(ax - 3 + i, ay + i, ax + 4 - i, ay + i, col);
++	}
++
++	render_text(sx + 15, sy + 2, hov ? whitecolor : col, 0, chat_latest_label(buf, sizeof(buf)));
++}
++
+ void display_text(void)
+ {
+ 	int link;
+ 
+ 	render_display_text();
++	display_chat_latest();
+ 
+ 	if ((link = render_scantext(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT), hitsel))) {
+ 		hittype = link;
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index 61add3f..7ded94a 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -396,6 +396,13 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 			break;
+ 		}
+ 
++		// the chat "jump to latest" button (only there while scrolled up)
++		if (pnl_at(mousex, mousey) == PNL_CHAT && chat_latest_hit(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT))) {
++			render_text_bottom();
++			chat_click = 1;
++			break;
++		}
++
+ 		// a click on the chat input box starts typing (the release is not passed on)
+ 		if (context_key_enabled() && !context_key_isset() && pnl_at(mousex, mousey) == PNL_CHAT &&
+ 		    cmd_box_hit(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT))) {
+diff --git a/src/gui/gui_private.h b/src/gui/gui_private.h
+index 97ae95c..4f0faa1 100644
+--- a/src/gui/gui_private.h
++++ b/src/gui/gui_private.h
+@@ -500,6 +500,7 @@ int do_display_questlog(int nr);
+ // window drawing shared by the Options and Questlog windows (options.c)
+ void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border);
+ void gui_draw_box_outline(int sx, int sy, int ex, int ey, unsigned short border);
++int chat_latest_hit(int mx, int my);
+ int cmd_box_hit(int x, int y);
+ void gui_draw_panel(int x, int y, int w, int h, int title_h);
+ 

@@ -1,0 +1,12 @@
+
+Astonia is
+	Copyright 1997-2000 by Daniel Brockhaus, Markus Roeder
+	Copyright 2001-2007 by Intent Software GmbH && Co. KG
+	Copyright 2008-2023 by Daniel Brockhaus
+
+The software is provided "as is" without warranty of any kind.
+
+If you are an end-user ("a player"), please see eula.txt instead.
+
+For the current license to use this software, please see https://brockhaus.org/astonia3.html
+

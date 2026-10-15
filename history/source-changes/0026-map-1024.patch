@@ -1,0 +1,481 @@
+--- a/src/gui/minimap.c	2026-10-13 00:13:39.119624225 +0000
++++ b/src/gui/minimap.c	2026-10-13 00:13:59.998493860 +0000
+@@ -20,7 +20,9 @@
+ #include "lib/cjson/cJSON.h"
+ 
+ #define MINIMAP           40
+-#define MAXMAP            256
++#define MAXMAP            1024 // map positions kept per area (server areas are up to 1024x1024)
++#define OLDMAP            256 // size of the old areas and of the map window on screen
++#define MAPWIN            256
+ #define IRGBA(r, g, b, a) (((uint32_t)(a) << 24) | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 0))
+ 
+ #define MAPPIX_UNKNOWN 0
+@@ -34,8 +36,11 @@
+ 
+ static unsigned char _mmap[MAXMAP * MAXMAP];
+ static unsigned short map_poi_idx[MAXMAP * MAXMAP];
++static unsigned char load_buf[MAXMAP * MAXMAP], load_buf2[MAXMAP * MAXMAP]; // file buffers (too big for the stack)
+ 
+-static uint32_t mapix1[MAXMAP * MAXMAP];
++static uint32_t mapix1[MAPWIN * MAPWIN];
++static int known_w, known_h; // highest known position + 1, decides between old 256 and big map handling
++static int tex_bx = -1, tex_by = -1; // part of the map currently in maptex1
+ static uint32_t mapix2[MINIMAP * MINIMAP * 4];
+ 
+ #define MAXSAVEMAP 100
+@@ -46,6 +51,113 @@
+ static int map_server = 0;
+ 
+ static int map_poi_load(void);
++
++// size of the area the map window can scroll over: 256 for the old areas, so they look as before
++static int map_ext(void)
++{
++	if (known_w > OLDMAP || known_h > OLDMAP || originx >= OLDMAP || originy >= OLDMAP) {
++		return MAXMAP;
++	}
++	return OLDMAP;
++}
++
++// left/top of a window of the given size around pos, kept inside the area
++static int win_base(int pos, int half, int size)
++{
++	int b = pos - half;
++
++	if (b > map_ext() - size) {
++		b = map_ext() - size;
++	}
++	if (b < 0) {
++		b = 0;
++	}
++	return b;
++}
++
++static void map_known_reset(void)
++{
++	int i;
++
++	known_w = known_h = 0;
++	for (i = 0; i < MAXMAP * MAXMAP; i++) {
++		if (_mmap[i]) {
++			if (i % MAXMAP + 1 > known_w) {
++				known_w = i % MAXMAP + 1;
++			}
++			if (i / MAXMAP + 1 > known_h) {
++				known_h = i / MAXMAP + 1;
++			}
++		}
++	}
++}
++
++static void map_known_add(int x, int y)
++{
++	if (x + 1 > known_w) {
++		known_w = x + 1;
++	}
++	if (y + 1 > known_h) {
++		known_h = y + 1;
++	}
++}
++
++// map files: 256x256 (old areas, same format as before) or MAXMAP x MAXMAP
++static int map_read_file(const char *filename, unsigned char *dst)
++{
++	FILE *fp;
++	long size;
++	int y;
++
++	fp = fopen(filename, "rb");
++	if (!fp) {
++		return 0;
++	}
++	fseek(fp, 0, SEEK_END);
++	size = ftell(fp);
++	fseek(fp, 0, SEEK_SET);
++
++	memset(dst, 0, MAXMAP * MAXMAP);
++	if (size == (long)MAXMAP * MAXMAP) {
++		fread(dst, MAXMAP * MAXMAP, 1, fp);
++	} else if (size == OLDMAP * OLDMAP) {
++		for (y = 0; y < OLDMAP; y++) {
++			fread(dst + y * MAXMAP, OLDMAP, 1, fp);
++		}
++	} else {
++		fclose(fp);
++		return 0;
++	}
++	fclose(fp);
++
++	return 1;
++}
++
++static void map_write_file(const char *filename, const unsigned char *src)
++{
++	FILE *fp;
++	int i, y, big = 0;
++
++	for (i = 0; i < MAXMAP * MAXMAP; i++) {
++		if (src[i] && (i % MAXMAP >= OLDMAP || i / MAXMAP >= OLDMAP)) {
++			big = 1;
++			break;
++		}
++	}
++
++	fp = fopen(filename, "wb");
++	if (!fp) {
++		return;
++	}
++	if (big) {
++		fwrite(src, MAXMAP * MAXMAP, 1, fp);
++	} else {
++		for (y = 0; y < OLDMAP; y++) {
++			fwrite(src + y * MAXMAP, OLDMAP, 1, fp);
++		}
++	}
++	fclose(fp);
++}
+ static void map_update_poi(void);
+ static uint32_t map_poi_col(int x, int y);
+ 
+@@ -54,7 +166,7 @@
+ // Position the map windows at the top right of the map area
+ void minimap_layout(void)
+ {
+-	sx = dotx(DOT_MBR) - MAXMAP - 6;
++	sx = dotx(DOT_MBR) - MAPWIN - 6;
+ 	sy = doty(DOT_MTL) + 6;
+ 
+ 	mx = dotx(DOT_MBR) - MINIMAP * 2 - 6;
+@@ -70,10 +182,11 @@
+ 	minimap_layout();
+ 
+ 	memset(_mmap, 0, sizeof(_mmap));
++	known_w = known_h = 0;
+ 	visible = 1;
+ 	update1 = update2 = update3 = 1;
+ 
+-	maptex1 = sdl_create_texture(MAXMAP, MAXMAP);
++	maptex1 = sdl_create_texture(MAPWIN, MAPWIN);
+ 	maptex2 = sdl_create_texture(MINIMAP * 2, MINIMAP * 2);
+ 
+ 	SDL_SetTextureBlendMode(maptex1, SDL_BLENDMODE_BLEND);
+@@ -97,6 +210,7 @@
+ 		}
+ 
+ 		_mmap[x + y * MAXMAP] = val;
++		map_known_add(x, y);
+ 		update1 = update2 = update3 = 1;
+ 	}
+ }
+@@ -161,6 +275,7 @@
+ 	}
+ 	if (rewrite_cnt > 8 && !map_managed) {
+ 		memset(_mmap, 0, sizeof(_mmap));
++		known_w = known_h = 0;
+ 		update1 = update2 = 1;
+ 		note("MAP CHANGED: %d", rewrite_cnt);
+ 	}
+@@ -233,57 +348,56 @@
+ 	}
+ 
+ 	if (visible & 2) { // display big map
++		int bx, by;
++
++		// the texture holds a MAPWIN x MAPWIN part of the map around the player
++		bx = win_base(originx, MAPWIN / 2, MAPWIN);
++		by = win_base(originy, MAPWIN / 2, MAPWIN);
++		if (bx != tex_bx || by != tex_by) {
++			tex_bx = bx;
++			tex_by = by;
++			update1 = 1;
++		}
++
+ 		if (update1) {
+-			for (y = 0; y < MAXMAP; y++) {
+-				for (x = 0; x < MAXMAP; x++) {
+-					mapix1[x + y * MAXMAP] = pix_col(x, y);
++			for (y = 0; y < MAPWIN; y++) {
++				for (x = 0; x < MAPWIN; x++) {
++					mapix1[x + y * MAPWIN] = pix_col(x + bx, y + by);
+ 				}
+ 			}
+-			SDL_UpdateTexture(maptex1, NULL, mapix1, MAXMAP * sizeof(uint32_t));
++			SDL_UpdateTexture(maptex1, NULL, mapix1, MAPWIN * sizeof(uint32_t));
+ 			update1 = 0;
+ 		}
+ 
+ 		dr.x = (float)((sx + x_offset) * sdl_scale);
+-		dr.w = (float)(MAXMAP * sdl_scale);
++		dr.w = (float)(MAPWIN * sdl_scale);
+ 		dr.y = (float)((sy + y_offset) * sdl_scale);
+-		dr.h = (float)(MAXMAP * sdl_scale);
++		dr.h = (float)(MAPWIN * sdl_scale);
+ 
+ 		if (visible & 1) {
+ 			sr.x = 0.0f;
+-			sr.w = (float)MAXMAP;
++			sr.w = (float)MAPWIN;
+ 			sr.y = 0.0f;
+-			sr.h = (float)MAXMAP;
++			sr.h = (float)MAPWIN;
+ 			sdl_render_copy(maptex1, &sr, &dr);
+-			draw_center(sx + originx, sy + originy);
++			draw_center(sx + originx - bx, sy + originy - by);
+ 		} else {
+-			x = originx - MAXMAP / 6;
+-			y = originy - MAXMAP / 6;
+-			if (x < 0) {
+-				x = 0;
+-			}
+-			if (x > MAXMAP - MAXMAP / 3) {
+-				x = MAXMAP - MAXMAP / 3;
+-			}
+-			if (y < 0) {
+-				y = 0;
+-			}
+-			if (y > MAXMAP - MAXMAP / 3) {
+-				y = MAXMAP - MAXMAP / 3;
+-			}
++			x = win_base(originx, MAPWIN / 6, MAPWIN / 3);
++			y = win_base(originy, MAPWIN / 6, MAPWIN / 3);
+ 
+-			sr.x = (float)x;
+-			sr.w = (float)(MAXMAP / 3);
+-			sr.y = (float)y;
+-			sr.h = (float)(MAXMAP / 3);
++			sr.x = (float)(x - bx);
++			sr.w = (float)(MAPWIN / 3);
++			sr.y = (float)(y - by);
++			sr.h = (float)(MAPWIN / 3);
+ 
+ 			sdl_render_copy(maptex1, &sr, &dr);
+ 			draw_center2(sx + (originx - x) * 3 + 2, sy + (originy - y) * 3 + 2);
+ 		}
+ 
+-		render_line(sx, sy, sx, sy + MAXMAP, 0xffff);
+-		render_line(sx, sy + MAXMAP, sx + MAXMAP, sy + MAXMAP, 0xffff);
+-		render_line(sx + MAXMAP, sy + MAXMAP, sx + MAXMAP, sy, 0xffff);
+-		render_line(sx + MAXMAP, sy, sx, sy, 0xffff);
++		render_line(sx, sy, sx, sy + MAPWIN, 0xffff);
++		render_line(sx, sy + MAPWIN, sx + MAPWIN, sy + MAPWIN, 0xffff);
++		render_line(sx + MAPWIN, sy + MAPWIN, sx + MAPWIN, sy, 0xffff);
++		render_line(sx + MAPWIN, sy, sx, sy, 0xffff);
+ 
+ 		render_text(sx + 6, sy + 6, 0xffff, 0, "N");
+ 	}
+@@ -342,6 +456,7 @@
+ static void minimap_clearonly(void)
+ {
+ 	memset(_mmap, 0, sizeof(_mmap));
++	known_w = known_h = 0;
+ 	update1 = update2 = update3 = 1;
+ }
+ 
+@@ -353,6 +468,7 @@
+ 	mapnr = -1;
+ 	map_area = 0;
+ 	memset(_mmap, 0, sizeof(_mmap));
++	known_w = known_h = 0;
+ 	update1 = update2 = update3 = 1;
+ }
+ 
+@@ -363,6 +479,7 @@
+ 	}
+ 
+ 	_mmap[x + y * MAXMAP] = MAPPIX_EMPTY;
++	map_known_add(x, y);
+ 	update1 = update2 = update3 = 1;
+ }
+ 
+@@ -437,16 +554,11 @@
+ 
+ 	filename = mapname(mapnr);
+ 	// note("saving area map to %s",filename);
+-	fp = fopen(filename, "wb");
+-	if (fp) {
+-		fwrite(_mmap, sizeof(_mmap), 1, fp);
+-		fclose(fp);
+-	}
++	map_write_file(filename, _mmap);
+ }
+ 
+ static void map_save_managed(void)
+ {
+-	FILE *fp;
+ 	char *filename;
+ 
+ 	if (!map_area) {
+@@ -455,11 +567,7 @@
+ 
+ 	filename = mapname(42);
+ 	note("saving area map to %s", filename);
+-	fp = fopen(filename, "wb");
+-	if (fp) {
+-		fwrite(_mmap, sizeof(_mmap), 1, fp);
+-		fclose(fp);
+-	}
++	map_write_file(filename, _mmap);
+ }
+ 
+ static void map_save(void)
+@@ -521,21 +629,16 @@
+ 
+ static int map_load_unmanaged(void)
+ {
+-	FILE *fp;
+ 	int i, hit, besti = -1, besthit = 0;
+-	unsigned char tmap[MAXMAP * MAXMAP];
+ 	char *filename;
+ 
+ 	for (i = 0; i < MAXSAVEMAP; i++) {
+ 		filename = mapname(i);
+-		fp = fopen(filename, "rb");
+-		if (!fp) {
++		if (!map_read_file(filename, load_buf)) {
+ 			continue;
+ 		}
+-		fread(tmap, sizeof(tmap), 1, fp);
+-		fclose(fp);
+ 
+-		if (!(hit = map_compare(tmap, _mmap))) {
++		if (!(hit = map_compare(load_buf, _mmap))) {
+ 			continue;
+ 		}
+ 
+@@ -547,14 +650,12 @@
+ 	if (besti != -1) {
+ 		filename = mapname(besti);
+ 		// note("loading area map from %s (%d hits)",filename,besthit);
+-		fp = fopen(filename, "rb");
+-		if (!fp) {
++		if (!map_read_file(filename, load_buf)) {
+ 			return -1;
+ 		}
+-		fread(tmap, sizeof(tmap), 1, fp);
+-		fclose(fp);
+ 
+-		map_merge(_mmap, tmap);
++		map_merge(_mmap, load_buf);
++		map_known_reset();
+ 
+ 		return besti;
+ 	}
+@@ -564,7 +665,6 @@
+ 
+ static int map_load_managed(void)
+ {
+-	FILE *fp;
+ 	char *filename;
+ 
+ 	if (!map_area) {
+@@ -574,12 +674,11 @@
+ 	filename = mapname(42);
+ 	note("loading area map from %s", filename);
+ 
+-	fp = fopen(filename, "rb");
+-	if (!fp) {
+-		return 1;
++	if (map_read_file(filename, load_buf)) {
++		memcpy(_mmap, load_buf, sizeof(_mmap));
++		map_known_reset();
++		update1 = update2 = 1;
+ 	}
+-	fread(_mmap, sizeof(_mmap), 1, fp);
+-	fclose(fp);
+ 
+ 	return 1;
+ }
+@@ -595,10 +694,8 @@
+ 
+ void minimap_compact(void)
+ {
+-	FILE *fp;
+ 	int i, j;
+ 	char *filename;
+-	unsigned char tmap[MAXMAP * MAXMAP], xmap[MAXMAP * MAXMAP];
+ 
+ 	if (game_options & GO_NOMAP) {
+ 		return;
+@@ -606,31 +703,20 @@
+ 
+ 	for (i = 0; i < MAXSAVEMAP; i++) {
+ 		filename = mapname(i);
+-		fp = fopen(filename, "rb");
+-		if (!fp) {
++		if (!map_read_file(filename, load_buf)) {
+ 			continue;
+ 		}
+-		fread(tmap, sizeof(tmap), 1, fp);
+-		fclose(fp);
+ 
+ 		for (j = i + 1; j < MAXSAVEMAP; j++) {
+ 			filename = mapname(j);
+-			fp = fopen(filename, "rb");
+-			if (!fp) {
++			if (!map_read_file(filename, load_buf2)) {
+ 				continue;
+ 			}
+-			fread(xmap, sizeof(xmap), 1, fp);
+-			fclose(fp);
+ 
+-			if (map_compare(tmap, xmap)) {
+-				map_merge(tmap, xmap);
++			if (map_compare(load_buf, load_buf2)) {
++				map_merge(load_buf, load_buf2);
+ 				filename = mapname(i);
+-				fp = fopen(filename, "wb");
+-				if (!fp) {
+-					continue;
+-				}
+-				fwrite(tmap, sizeof(tmap), 1, fp);
+-				fclose(fp);
++				map_write_file(filename, load_buf);
+ 
+ 				filename = mapname(j);
+ 				remove(filename);
+@@ -724,8 +810,8 @@
+ 			}
+ 		}
+ 
+-		map_poi[map_poi_cnt].x = max(0, min(255, x->valueint));
+-		map_poi[map_poi_cnt].y = max(0, min(255, y->valueint));
++		map_poi[map_poi_cnt].x = max(0, min(MAXMAP - 1, x->valueint));
++		map_poi[map_poi_cnt].y = max(0, min(MAXMAP - 1, y->valueint));
+ 		map_poi[map_poi_cnt].type = type->valueint;
+ 		map_poi[map_poi_cnt].desc = xstrdup(desc->valuestring, MEM_GUI);
+ 		map_poi_cnt++;
+@@ -861,20 +947,8 @@
+ 	} else if (visible == 2) { // big scaled up map
+ 		int ox, oy;
+ 
+-		ox = originx - MAXMAP / 6;
+-		oy = originy - MAXMAP / 6;
+-		if (ox < 0) {
+-			ox = 0;
+-		}
+-		if (ox > MAXMAP - MAXMAP / 3) {
+-			ox = MAXMAP - MAXMAP / 3;
+-		}
+-		if (oy < 0) {
+-			oy = 0;
+-		}
+-		if (oy > MAXMAP - MAXMAP / 3) {
+-			oy = MAXMAP - MAXMAP / 3;
+-		}
++		ox = win_base(originx, MAPWIN / 6, MAPWIN / 3);
++		oy = win_base(originy, MAPWIN / 6, MAPWIN / 3);
+ 
+ 		x = hx - sx;
+ 		y = hy - sy;
+@@ -883,8 +957,8 @@
+ 		y = y / 3 + oy;
+ 
+ 	} else if (visible == 3) { // big full map
+-		x = hx - sx;
+-		y = hy - sy;
++		x = hx - sx + win_base(originx, MAPWIN / 2, MAPWIN);
++		y = hy - sy + win_base(originy, MAPWIN / 2, MAPWIN);
+ 	} else {
+ 		return;
+ 	}

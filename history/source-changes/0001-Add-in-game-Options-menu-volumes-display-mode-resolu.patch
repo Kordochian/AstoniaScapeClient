@@ -1,0 +1,1405 @@
+From 2f324fb1aee06796bb6e70741c0661bcc6805f80 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 07:35:24 +0000
+Subject: [PATCH 1/2] Add in-game Options menu: volumes, display mode,
+ resolution, resizable window
+
+Options button in the top bar (and /options) opens a window with sound effects
+and music volume sliders, display mode (windowed, windowed fullscreen,
+fullscreen) and resolution. Settings are saved to settings.ini.
+
+The window is now resizable; SDL logical presentation scales the game to fit
+and mouse coordinates are converted to match. Sound effects no longer play at
+double gain (play_sdl_sound used 1+volume/128).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ build/make/Makefile.linux   |   3 +-
+ build/make/Makefile.macos   |   3 +-
+ build/make/Makefile.windows |   3 +-
+ src/amod/amod.h             |   1 +
+ src/game/main.c             |   3 +
+ src/gui/cmd.c               |   5 +
+ src/gui/display.c           |   4 +
+ src/gui/dots.c              |   1 +
+ src/gui/gui.h               |  15 +
+ src/gui/gui_buttons.c       |  27 ++
+ src/gui/gui_core.c          |   1 +
+ src/gui/gui_input.c         |  16 +
+ src/gui/gui_private.h       |   6 +-
+ src/gui/hover.c             |   3 +
+ src/gui/options.c           | 622 ++++++++++++++++++++++++++++++++++++
+ src/sdl/sdl.h               |  17 +
+ src/sdl/sdl_core.c          | 274 +++++++++++++++-
+ src/sdl/sound.c             |  24 +-
+ 18 files changed, 1011 insertions(+), 17 deletions(-)
+ create mode 100644 src/gui/options.c
+
+diff --git a/build/make/Makefile.linux b/build/make/Makefile.linux
+index 99af265..8c88878 100644
+--- a/build/make/Makefile.linux
++++ b/build/make/Makefile.linux
+@@ -73,7 +73,7 @@ OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui
+ 			src/sdl/sdl_core.o src/sdl/sdl_texture.o src/sdl/sdl_image.o src/sdl/sdl_effects.o src/sdl/sdl_draw.o src/sdl/sound.o\
+ 			src/helper/helper.o\
+ 			src/gui/dots.o src/gui/display.o src/gui/teleport.o src/gui/color.o src/gui/cmd.o\
+-			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o\
++			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o\
+ 			src/game/memory_linux.o src/game/version.o\
+ 			src/lib/cjson/cJSON.o
+ 
+@@ -122,6 +122,7 @@ src/gui/display.o:	src/gui/display.c src/astonia.h src/gui/gui.h src/gui/gui_pri
+ src/gui/gui.o:		src/gui/gui.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h  src/sdl/sdl.h src/modder/modder.h
+ src/gui/hover.o:	src/gui/hover.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/gui/gui.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+ src/gui/minimap.o:	src/gui/minimap.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
++src/gui/options.o:	src/gui/options.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+ src/gui/teleport.o:	src/gui/teleport.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ src/gui/questlog.o:	src/gui/questlog.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ 
+diff --git a/build/make/Makefile.macos b/build/make/Makefile.macos
+index 0066f0b..aec2f98 100644
+--- a/build/make/Makefile.macos
++++ b/build/make/Makefile.macos
+@@ -111,7 +111,7 @@ OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui
+ 			src/sdl/sdl_core.o src/sdl/sdl_texture.o src/sdl/sdl_image.o src/sdl/sdl_effects.o src/sdl/sdl_draw.o src/sdl/sound.o\
+ 			src/helper/helper.o\
+ 			src/gui/dots.o src/gui/display.o src/gui/teleport.o src/gui/color.o src/gui/cmd.o\
+-			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o\
++			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o\
+ 			src/game/memory_macos.o\
+ 			src/lib/cjson/cJSON.o
+ 
+@@ -163,6 +163,7 @@ src/gui/dots.o:		src/gui/dots.c src/astonia.h src/gui/gui.h src/gui/gui_private.
+ src/gui/display.o:	src/gui/display.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ src/gui/hover.o:	src/gui/hover.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/gui/gui.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+ src/gui/minimap.o:	src/gui/minimap.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
++src/gui/options.o:	src/gui/options.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+ src/gui/teleport.o:	src/gui/teleport.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ src/gui/questlog.o:	src/gui/questlog.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ 
+diff --git a/build/make/Makefile.windows b/build/make/Makefile.windows
+index 8c29d74..b4a1847 100644
+--- a/build/make/Makefile.windows
++++ b/build/make/Makefile.windows
+@@ -254,7 +254,7 @@ OBJS	=		src/gui/gui_core.o src/gui/gui_input.o src/gui/gui_display.o src/gui/gui
+ 			src/sdl/sdl_core.o src/sdl/sdl_texture.o src/sdl/sdl_image.o src/sdl/sdl_effects.o src/sdl/sdl_draw.o src/sdl/sound.o\
+ 			src/game/resource.o src/helper/helper.o\
+ 			src/gui/dots.o src/gui/display.o src/gui/teleport.o src/gui/color.o src/gui/cmd.o\
+-			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o\
++			src/gui/questlog.o src/gui/context.o src/gui/hover.o src/gui/minimap.o src/gui/options.o\
+ 			src/modder/sharedmem_windows.o src/game/crash_handler_windows.o\
+ 			src/game/memory_windows.o src/gui/draghack_windows.o src/client/unique_windows.o\
+ 			src/game/version.o\
+@@ -312,6 +312,7 @@ src/gui/display.o:	src/gui/display.c src/astonia.h src/gui/gui.h src/gui/gui_pri
+ src/gui/gui.o:		src/gui/gui.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h  src/sdl/sdl.h src/modder/modder.h
+ src/gui/hover.o:	src/gui/hover.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/gui/gui.h src/game/game.h src/sdl/sdl.h src/modder/modder.h
+ src/gui/minimap.o:	src/gui/minimap.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
++src/gui/options.o:	src/gui/options.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/sdl/sdl.h src/game/game.h
+ src/gui/teleport.o:	src/gui/teleport.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ src/gui/questlog.o:	src/gui/questlog.c src/astonia.h src/gui/gui.h src/gui/gui_private.h src/client/client.h src/game/game.h
+ 
+diff --git a/src/amod/amod.h b/src/amod/amod.h
+index b8a2ce6..c8ce95a 100644
+--- a/src/amod/amod.h
++++ b/src/amod/amod.h
+@@ -186,6 +186,7 @@ DLL_IMPORT void sound_stop_all(void);
+ DLL_IMPORT void sound_set_volume(int channel, float volume);
+ DLL_IMPORT void sound_fade(int channel, float target, int duration);
+ DLL_IMPORT float sound_get_master_volume(void);
++DLL_IMPORT float sound_get_music_volume(void);
+ DLL_IMPORT int sound_is_playing(int channel);
+ DLL_IMPORT int sound_is_enabled(void);
+ 
+diff --git a/src/game/main.c b/src/game/main.c
+index 2248df0..95ce983 100644
+--- a/src/game/main.c
++++ b/src/game/main.c
+@@ -629,6 +629,7 @@ int main(int argc, char *argv[])
+ #endif
+ 
+ 	load_options();
++	options_load(); // settings.ini: volumes, display mode and size
+ 
+ 	// set some stuff
+ 	if (!*username || !*password || !*server_url) {
+@@ -665,6 +666,7 @@ int main(int argc, char *argv[])
+ 
+ 	render_init();
+ 	init_sound();
++	options_init();
+ 
+ 	if (game_options & GO_LARGE) {
+ 		namesize = 0;
+@@ -682,6 +684,7 @@ int main(int argc, char *argv[])
+ #endif
+ 	amod_exit();
+ 	main_exit();
++	options_exit();
+ 	sound_exit();
+ 	render_exit();
+ 	sdl_exit();
+diff --git a/src/gui/cmd.c b/src/gui/cmd.c
+index ebfaf42..6d8dbb0 100644
+--- a/src/gui/cmd.c
++++ b/src/gui/cmd.c
+@@ -117,9 +117,14 @@ static int client_cmd(char *buf)
+ 			new_sound_volume = 128;
+ 		}
+ 		sound_volume = new_sound_volume;
++		options_save();
+ 		addline("Volume is now at %d", sound_volume);
+ 		return 1;
+ 	}
++	if (!strncmp(buf, "#options", 8) || !strncmp(buf, "/options", 8)) {
++		options_open();
++		return 1;
++	}
+ 	if (!strncmp(buf, "#version", 5) || !strncmp(buf, "/version", 5)) {
+ 		cmd_version();
+ 		if (sv_ver == 35) {
+diff --git a/src/gui/display.c b/src/gui/display.c
+index 8e800df..0564966 100644
+--- a/src/gui/display.c
++++ b/src/gui/display.c
+@@ -138,6 +138,10 @@ void display_wear(void)
+ 	dx_copysprite_emerald(butx(BUT_WEA_LCK), buty(BUT_WEA_LCK), 2 - gear_lock, 2);
+ 	render_text(butx(BUT_WEA_LCK) + 6, buty(BUT_WEA_LCK) - 4, textcolor, RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
+ 	    gear_lock ? "Gear locked" : "Gear free");
++
++	render_text(dotx(DOT_TOP) + OPTIONS_BUT_X, doty(DOT_TOP) + 9,
++	    (butsel == BUT_OPTIONS || options_is_open()) ? whitecolor : textcolor, RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
++	    "Options");
+ }
+ 
+ void display_look(void)
+diff --git a/src/gui/dots.c b/src/gui/dots.c
+index bdcad15..0ab5a44 100644
+--- a/src/gui/dots.c
++++ b/src/gui/dots.c
+@@ -242,4 +242,5 @@ void init_dots(void)
+ 	set_but(BUT_MOD_WALK1, dot[DOT_MOD].x + 0 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
+ 	set_but(BUT_MOD_WALK2, dot[DOT_MOD].x + 2 * 14, dot[DOT_MOD].y + 0 * 30, 30, 0);
+ 	set_but(BUT_HELP_DRAG, (dotx(DOT_HLP) + dotx(DOT_HL2)) / 2, doty(DOT_HLP) + 6, 0, BUTF_CAPTURE | BUTF_MOVEEXEC);
++	set_but(BUT_OPTIONS, 0, 0, 0, BUTF_NOHIT); // hit test in detect_hover_target()
+ }
+diff --git a/src/gui/gui.h b/src/gui/gui.h
+index 63e7feb..c604fbc 100644
+--- a/src/gui/gui.h
++++ b/src/gui/gui.h
+@@ -60,6 +60,21 @@ void gui_dump(FILE *fp);
+ void gui_sdl_keyproc(SDL_Keycode wparam);
+ void gui_sdl_mouseproc(float x, float y, int what);
+ 
++// Options menu (options.c)
++void options_load(void);
++void options_save(void);
++void options_exit(void);
++void options_open(void);
++void options_close(void);
++int options_is_open(void);
++int options_over(int x, int y);
++int options_mouse(int what, int x, int y, int delta);
++void options_init(void);
++int options_over_control(int x, int y);
++void options_display(void);
++void options_window_changed(void);
++void options_set_sfx_volume(int percent);
++
+ extern int (*get_skltab_sep)(int i);
+ DLL_EXPORT int _get_skltab_sep(int i);
+ extern int (*get_skltab_index)(int n);
+diff --git a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+index 0f421de..c6e614f 100644
+--- a/src/gui/gui_buttons.c
++++ b/src/gui/gui_buttons.c
+@@ -267,6 +267,9 @@ static void set_cmd_cursor(int cmd)
+ 	case CMD_EXIT:
+ 		cursor = SDL_CUR_c_use;
+ 		break;
++	case CMD_OPTIONS:
++		cursor = SDL_CUR_c_use;
++		break;
+ 	case CMD_NOLOOK:
+ 		cursor = SDL_CUR_c_use;
+ 		break;
+@@ -415,6 +418,10 @@ static void detect_hover_target(void)
+ 	    mousey <= doty(DOT_TOP) + 18) {
+ 		butsel = BUT_EXIT;
+ 	}
++	if (mousex >= dotx(DOT_TOP) + OPTIONS_BUT_X - 2 && mousex <= dotx(DOT_TOP) + OPTIONS_BUT_X + 34 &&
++	    mousey >= doty(DOT_TOP) + 7 && mousey <= doty(DOT_TOP) + 18) {
++		butsel = BUT_OPTIONS;
++	}
+ 
+ 	// hit teleport?
+ 	telsel = get_teleport(mousex, mousey);
+@@ -867,6 +874,13 @@ void exec_cmd(int cmd, int a)
+ 	case CMD_EXIT:
+ 		quit = 1;
+ 		return;
++	case CMD_OPTIONS:
++		if (options_is_open()) {
++			options_close();
++		} else {
++			options_open();
++		}
++		return;
+ 	case CMD_NOLOOK:
+ 		show_look = 0;
+ 		return;
+@@ -1188,6 +1202,9 @@ void handle_special_buttons_logic(void)
+ 		if (butsel == BUT_EXIT) {
+ 			lcmd = CMD_EXIT;
+ 		}
++		if (butsel == BUT_OPTIONS) {
++			lcmd = CMD_OPTIONS;
++		}
+ 		if (butsel == BUT_HELP) {
+ 			lcmd = CMD_HELP;
+ 		}
+@@ -1304,6 +1321,16 @@ void set_cmd_states(void)
+ 		return;
+ 	}
+ 
++	if (options_is_open()) {
++		// the options window is on top and takes the mouse
++		butsel = invsel = weasel = consel = sklsel = sklsel2 = telsel = helpsel = colsel = skl_look_sel = questsel =
++		    actsel = -1;
++		mapsel = itmsel = chrsel = MAXMN;
++		lcmd = rcmd = CMD_NONE;
++		set_cmd_cursor(options_over_control(mousex, mousey) ? CMD_OPTIONS : CMD_NONE);
++		return;
++	}
++
+ 	detect_hover_target();
+ 
+ 	calculate_lcmd_logic();
+diff --git a/src/gui/gui_core.c b/src/gui/gui_core.c
+index ca9e4b0..8a602df 100644
+--- a/src/gui/gui_core.c
++++ b/src/gui/gui_core.c
+@@ -402,6 +402,7 @@ int main_loop(void)
+ 				display();
+ 				amod_frame();
+ 				display_mouseover();
++				options_display();
+ 				minimap_update();
+ 			}
+ 
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index d6ddb8d..155267f 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -30,6 +30,10 @@ void gui_sdl_keyproc(SDL_Keycode wparam)
+ 
+ 	switch (wparam) {
+ 	case SDLK_ESCAPE:
++		if (options_is_open()) {
++			options_close();
++			return;
++		}
+ 		cmd_stop();
+ 		context_stop();
+ 		show_look = 0;
+@@ -299,6 +303,16 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 	int local_x = (int)x;
+ 	int local_y = (int)y;
+ 
++	// The options window takes all clicks while it is open
++	if (what != SDL_MOUM_NONE && options_mouse(what, mousex, mousey, local_y)) {
++		if (what == SDL_MOUM_LUP) {
++			vk_lbut = 0;
++		} else if (what == SDL_MOUM_RUP) {
++			vk_rbut = 0;
++		}
++		return;
++	}
++
+ 	switch (what) {
+ 	case SDL_MOUM_NONE:
+ 		mousex = local_x;
+@@ -317,6 +331,8 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		mousex -= render_offset_x();
+ 		mousey -= render_offset_y();
+ 
++		options_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
++
+ 		if (butsel != -1 && vk_lbut && (but[butsel].flags & BUTF_MOVEEXEC)) {
+ 			exec_cmd(lcmd, 0);
+ 		}
+diff --git a/src/gui/gui_private.h b/src/gui/gui_private.h
+index 26ed360..fdd2eca 100644
+--- a/src/gui/gui_private.h
++++ b/src/gui/gui_private.h
+@@ -64,7 +64,10 @@
+ #define BUT_WEA_LCK 101
+ // BUT_HELP_INDEX is 102
+ 
+-#define MAX_BUT 103
++#define BUT_OPTIONS   103
++#define OPTIONS_BUT_X 652 // "Options" in the top bar, left of Exit
++
++#define MAX_BUT 104
+ 
+ #define BUTF_NOHIT    (1 << 1) // button is ignored int hit processing
+ #define BUTF_CAPTURE  (1 << 2) // button captures mouse on lclick
+@@ -186,6 +189,7 @@
+ 
+ #define CMD_WEAR_LOCK  81
+ #define CMD_HELP_INDEX 82
++#define CMD_OPTIONS    83
+ 
+ #define STV_EMPTYLINE  -1
+ #define STV_JUSTAVALUE -2 // value is in curr
+diff --git a/src/gui/hover.c b/src/gui/hover.c
+index bef5657..e230f4a 100644
+--- a/src/gui/hover.c
++++ b/src/gui/hover.c
+@@ -45,6 +45,9 @@ void display_mouseover(void)
+ 	if (mousex < 0 || mousex >= XRES || mousey < 0 || mousey >= YRES || !sdl_has_focus()) {
+ 		return;
+ 	}
++	if (options_is_open()) {
++		return;
++	}
+ 
+ 	if (mousey >= doty(DOT_SSP) && mousey <= doty(DOT_SSP) + 53) {
+ 		if (mousex >= dotx(DOT_SSP) + 28 && mousex <= dotx(DOT_SSP) + 35) {
+diff --git a/src/gui/options.c b/src/gui/options.c
+new file mode 100644
+index 0000000..b6de5a0
+--- /dev/null
++++ b/src/gui/options.c
+@@ -0,0 +1,622 @@
++/*
++ * Part of Astonia Client (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Graphical User Interface - Options menu
++ *
++ * In-game window for the audio volumes and the display mode / resolution.
++ * Settings are kept in settings.ini next to moac35.dat (bin/data or the
++ * user's application data folder).
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <SDL3/SDL.h>
++
++#include "astonia.h"
++#include "gui/gui.h"
++#include "gui/gui_private.h"
++#include "client/client.h"
++#include "game/game.h"
++#include "sdl/sdl.h"
++
++extern int want_width, want_height;
++
++// panel size and layout, in game coordinates
++#define PW 300
++#define PH 198
++
++#define ROW_SFX   40
++#define ROW_MUSIC 58
++#define ROW_MODE  104
++#define ROW_RES   122
++#define ROW_NOTE  146
++
++#define CTRL_X 112 // left edge of the sliders and selectors
++#define SLD_W  130 // slider width
++#define SEL_W  170 // selector width
++
++#define BTN_W 64
++#define BTN_H 16
++
++enum {
++	H_NONE,
++	H_CLOSE,
++	H_SFX,
++	H_MUSIC,
++	H_MODE_L,
++	H_MODE_R,
++	H_RES_L,
++	H_RES_R,
++	H_APPLY,
++	H_DONE,
++};
++
++static int is_open = 0;
++static int dragging = H_NONE;
++
++static int sel_mode = DISPMODE_WINDOWED;
++static int sel_res = 0;
++static int res_cnt = 0;
++static int res_w[MAX_RESOLUTIONS + 1], res_h[MAX_RESOLUTIONS + 1];
++
++// graphics settings from settings.ini, only written once the player chose them in game
++static int have_gfx = 0;
++static int cfg_mode = DISPMODE_WINDOWED;
++static int cfg_w = 0, cfg_h = 0;
++
++// window size at startup, and the scale we last told the player about
++static int base_w = 0, base_h = 0;
++static int hint_scale = 0;
++static int dirty = 0;
++
++static const char *mode_name[] = {"Windowed", "Windowed fullscreen", "Fullscreen"};
++static const char *mode_key[] = {"windowed", "borderless", "fullscreen"};
++
++static void current_selection(void);
++
++static int clampi(int v, int lo, int hi)
++{
++	return v < lo ? lo : (v > hi ? hi : v);
++}
++
++static void settings_filename(char *buf, size_t size)
++{
++	if (localdata) {
++		snprintf(buf, size, "%s%s", localdata, "settings.ini");
++	} else {
++		snprintf(buf, size, "%s", "bin/data/settings.ini");
++	}
++}
++
++static int sfx_percent(void)
++{
++	return clampi((sound_volume * 100 + 64) / 128, 0, 100);
++}
++
++void options_set_sfx_volume(int percent)
++{
++	percent = clampi(percent, 0, 100);
++	sound_volume = (percent * 128 + 50) / 100;
++	dirty = 1;
++}
++
++static void set_music_volume(int percent)
++{
++	music_volume = clampi(percent, 0, 100);
++	dirty = 1;
++}
++
++// Read settings.ini. Called before the window is created, so the display mode and
++// size saved here replace what -w / -h / -o asked for.
++void options_load(void)
++{
++	char filename[MAX_PATH], line[256], *val, *end;
++	FILE *fp;
++	int mode = -1, w = 0, h = 0;
++
++	settings_filename(filename, sizeof(filename));
++	fp = fopen(filename, "r");
++	if (!fp) {
++		return;
++	}
++
++	while (fgets(line, sizeof(line), fp)) {
++		if (line[0] == '#' || line[0] == ';' || !(val = strchr(line, '='))) {
++			continue;
++		}
++		*val++ = 0;
++		for (end = val + strlen(val); end > val && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '); end--) {
++			end[-1] = 0;
++		}
++
++		if (!strcmp(line, "sfx_volume")) {
++			options_set_sfx_volume(atoi(val));
++		} else if (!strcmp(line, "music_volume")) {
++			set_music_volume(atoi(val));
++		} else if (!strcmp(line, "display_mode")) {
++			for (int i = 0; i < 3; i++) {
++				if (!strcmp(val, mode_key[i])) {
++					mode = i;
++				}
++			}
++		} else if (!strcmp(line, "width")) {
++			w = atoi(val);
++		} else if (!strcmp(line, "height")) {
++			h = atoi(val);
++		}
++	}
++	fclose(fp);
++
++	if (mode != -1) {
++		have_gfx = 1;
++		cfg_mode = mode;
++		cfg_w = w;
++		cfg_h = h;
++
++		sdl_display_mode = mode;
++		if (mode == DISPMODE_BORDERLESS) {
++			want_width = want_height = 0;
++		} else if (w >= 640 && h >= 360) {
++			want_width = w;
++			want_height = h;
++		}
++	}
++	dirty = 0;
++}
++
++void options_save(void)
++{
++	char filename[MAX_PATH];
++	FILE *fp;
++
++	settings_filename(filename, sizeof(filename));
++	fp = fopen(filename, "w");
++	if (!fp) {
++		warn("Could not write %s", filename);
++		return;
++	}
++
++	fprintf(fp, "# Astonia client settings, changed with the in-game Options menu\n");
++	fprintf(fp, "sfx_volume=%d\n", sfx_percent());
++	fprintf(fp, "music_volume=%d\n", music_volume);
++	if (have_gfx) {
++		fprintf(fp, "display_mode=%s\n", mode_key[clampi(cfg_mode, 0, 2)]);
++		if (cfg_mode != DISPMODE_BORDERLESS) {
++			fprintf(fp, "width=%d\n", cfg_w);
++			fprintf(fp, "height=%d\n", cfg_h);
++		}
++	}
++	fclose(fp);
++	dirty = 0;
++}
++
++// Called at exit: keep a window size the player dragged to
++void options_exit(void)
++{
++	if (dirty) {
++		options_save();
++	}
++}
++
++// Called once the window exists
++void options_init(void)
++{
++	sdl_get_mode_size(&base_w, &base_h);
++	hint_scale = sdl_scale;
++}
++
++// Called by the SDL layer whenever the window's size in pixels changed
++void options_window_changed(void)
++{
++	int w, h, best;
++
++	if (sdl_display_mode == DISPMODE_WINDOWED) {
++		sdl_get_mode_size(&w, &h);
++		if (w > 0 && h > 0 && (w != base_w || h != base_h)) {
++			// remember the window size for the next start, as most programs do
++			base_w = w;
++			base_h = h;
++			have_gfx = 1;
++			cfg_mode = DISPMODE_WINDOWED;
++			cfg_w = w;
++			cfg_h = h;
++			dirty = 1;
++		}
++	}
++
++	if (is_open) {
++		current_selection();
++	}
++
++	best = sdl_best_scale();
++	if (best != sdl_scale && best != hint_scale) {
++		addline("Restart the client to get %s graphics at this window size.", best > sdl_scale ? "larger" : "smaller");
++	}
++	hint_scale = best;
++}
++
++static void current_selection(void)
++{
++	int w, h, i;
++
++	sel_mode = clampi(sdl_display_mode, 0, 2);
++	res_cnt = sdl_get_resolutions(res_w, res_h, MAX_RESOLUTIONS);
++
++	sdl_get_mode_size(&w, &h);
++	for (i = 0; i < res_cnt; i++) {
++		if (res_w[i] == w && res_h[i] == h) {
++			break;
++		}
++	}
++	if (i == res_cnt && w > 0 && h > 0) {
++		// the window has a size of its own (it was resized), offer it too
++		for (i = 0; i < res_cnt && (res_w[i] < w || (res_w[i] == w && res_h[i] < h)); i++) {
++			;
++		}
++		memmove(&res_w[i + 1], &res_w[i], sizeof(int) * (size_t)(res_cnt - i));
++		memmove(&res_h[i + 1], &res_h[i], sizeof(int) * (size_t)(res_cnt - i));
++		res_w[i] = w;
++		res_h[i] = h;
++		res_cnt++;
++	}
++	sel_res = clampi(i, 0, res_cnt > 0 ? res_cnt - 1 : 0);
++}
++
++void options_open(void)
++{
++	current_selection();
++	dragging = H_NONE;
++	is_open = 1;
++}
++
++void options_close(void)
++{
++	if (!is_open) {
++		return;
++	}
++	is_open = 0;
++	dragging = H_NONE;
++	if (dirty) {
++		options_save();
++	}
++}
++
++int options_is_open(void)
++{
++	return is_open;
++}
++
++static int panel_x(void)
++{
++	return (XRES - PW) / 2;
++}
++
++static int panel_y(void)
++{
++	int y = (YRES - PH) / 2 - 20;
++	return y < 4 ? 4 : y;
++}
++
++int options_over(int x, int y)
++{
++	int px = panel_x(), py = panel_y();
++
++	return is_open && x >= px && x < px + PW && y >= py && y < py + PH;
++}
++
++static int in_box(int x, int y, int sx, int sy, int ex, int ey)
++{
++	return x >= sx && x <= ex && y >= sy && y <= ey;
++}
++
++static int changes_pending(void)
++{
++	int w, h;
++
++	if (sel_mode != sdl_display_mode) {
++		return 1;
++	}
++	if (sel_mode == DISPMODE_BORDERLESS || res_cnt == 0) {
++		return 0;
++	}
++	sdl_get_mode_size(&w, &h);
++	return res_w[sel_res] != w || res_h[sel_res] != h;
++}
++
++static int hit_test(int x, int y)
++{
++	int px = panel_x(), py = panel_y();
++	int cx = px + CTRL_X;
++
++	if (!options_over(x, y)) {
++		return H_NONE;
++	}
++	if (in_box(x, y, px + PW - 18, py + 2, px + PW - 4, py + 15)) {
++		return H_CLOSE;
++	}
++	if (in_box(x, y, cx - 4, py + ROW_SFX - 3, cx + SLD_W + 4, py + ROW_SFX + 12)) {
++		return H_SFX;
++	}
++	if (in_box(x, y, cx - 4, py + ROW_MUSIC - 3, cx + SLD_W + 4, py + ROW_MUSIC + 12)) {
++		return H_MUSIC;
++	}
++	if (in_box(x, y, cx, py + ROW_MODE - 2, cx + 14, py + ROW_MODE + 11)) {
++		return H_MODE_L;
++	}
++	if (in_box(x, y, cx + SEL_W - 14, py + ROW_MODE - 2, cx + SEL_W, py + ROW_MODE + 11)) {
++		return H_MODE_R;
++	}
++	if (sel_mode != DISPMODE_BORDERLESS) {
++		if (in_box(x, y, cx, py + ROW_RES - 2, cx + 14, py + ROW_RES + 11)) {
++			return H_RES_L;
++		}
++		if (in_box(x, y, cx + SEL_W - 14, py + ROW_RES - 2, cx + SEL_W, py + ROW_RES + 11)) {
++			return H_RES_R;
++		}
++	}
++	if (in_box(x, y, px + PW / 2 - BTN_W - 8, py + PH - BTN_H - 10, px + PW / 2 - 8, py + PH - 10)) {
++		return changes_pending() ? H_APPLY : H_NONE;
++	}
++	if (in_box(x, y, px + PW / 2 + 8, py + PH - BTN_H - 10, px + PW / 2 + 8 + BTN_W, py + PH - 10)) {
++		return H_DONE;
++	}
++	return H_NONE;
++}
++
++int options_over_control(int x, int y)
++{
++	return hit_test(x, y) != H_NONE;
++}
++
++static void slider_set(int which, int x)
++{
++	int cx = panel_x() + CTRL_X;
++	int v = clampi(((x - cx) * 100 + SLD_W / 2) / SLD_W, 0, 100);
++
++	if (which == H_SFX) {
++		options_set_sfx_volume(v);
++	} else {
++		set_music_volume(v);
++	}
++}
++
++static void apply_graphics(void)
++{
++	int w = 0, h = 0;
++
++	if (res_cnt > 0) {
++		w = res_w[sel_res];
++		h = res_h[sel_res];
++	}
++	if (!sdl_set_display_mode(sel_mode, w, h)) {
++		return;
++	}
++
++	sdl_get_mode_size(&w, &h);
++	base_w = w;
++	base_h = h;
++	have_gfx = 1;
++	cfg_mode = sel_mode;
++	cfg_w = w;
++	cfg_h = h;
++	options_save();
++
++	current_selection();
++	options_window_changed();
++}
++
++static void click(int what)
++{
++	switch (what) {
++	case H_CLOSE:
++	case H_DONE:
++		options_close();
++		break;
++	case H_MODE_L:
++		sel_mode = (sel_mode + 2) % 3;
++		break;
++	case H_MODE_R:
++		sel_mode = (sel_mode + 1) % 3;
++		break;
++	case H_RES_L:
++		if (sel_res > 0) {
++			sel_res--;
++		}
++		break;
++	case H_RES_R:
++		if (sel_res < res_cnt - 1) {
++			sel_res++;
++		}
++		break;
++	case H_APPLY:
++		apply_graphics();
++		break;
++	default:
++		break;
++	}
++}
++
++// Mouse input while the panel is open. Returns 1 if the event was used here, which
++// is always the case while the panel is open: the game underneath gets no clicks.
++int options_mouse(int what, int x, int y, int delta)
++{
++	static int pressed = H_NONE;
++	int h;
++
++	if (!is_open) {
++		return 0;
++	}
++
++	switch (what) {
++	case SDL_MOUM_NONE:
++		if (dragging != H_NONE) {
++			slider_set(dragging, x);
++			return 1;
++		}
++		return 0;
++
++	case SDL_MOUM_LDOWN:
++		if (!options_over(x, y)) {
++			options_close();
++			return 1;
++		}
++		h = hit_test(x, y);
++		if (h == H_SFX || h == H_MUSIC) {
++			dragging = h;
++			slider_set(h, x);
++		}
++		pressed = h;
++		return 1;
++
++	case SDL_MOUM_LUP:
++		if (dragging != H_NONE) {
++			dragging = H_NONE;
++			if (dirty) {
++				options_save();
++			}
++			pressed = H_NONE;
++			return 1;
++		}
++		h = hit_test(x, y);
++		if (h != H_NONE && h == pressed) {
++			click(h);
++		}
++		pressed = H_NONE;
++		return 1;
++
++	case SDL_MOUM_WHEEL:
++		h = hit_test(x, y);
++		if (h == H_SFX) {
++			options_set_sfx_volume(sfx_percent() + (delta > 0 ? 5 : -5));
++		} else if (h == H_MUSIC) {
++			set_music_volume(music_volume + (delta > 0 ? 5 : -5));
++		}
++		return 1;
++
++	default:
++		return 1;
++	}
++}
++
++static void draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border)
++{
++	render_rect(sx, sy, ex, ey, fill);
++	render_line(sx, sy, ex, sy, border);
++	render_line(sx, ey, ex, ey, border);
++	render_line(sx, sy, sx, ey, border);
++	render_line(ex, sy, ex, ey + 1, border);
++}
++
++static void draw_slider(int row, int value, int hover, const char *label)
++{
++	int px = panel_x(), py = panel_y();
++	int cx = px + CTRL_X, y = py + row;
++	int kx = cx + value * SLD_W / 100;
++	unsigned short gold = IRGB(26, 20, 8);
++
++	render_text(px + 16, y, textcolor, 0, label);
++
++	render_rect(cx, y + 4, cx + SLD_W, y + 7, IRGB(6, 5, 3));
++	render_rect(cx, y + 4, kx, y + 7, gold);
++	draw_box(kx - 3, y - 1, kx + 3, y + 11, hover ? whitecolor : IRGB(22, 20, 16), IRGB(4, 3, 2));
++
++	render_text_fmt(cx + SLD_W + 12, y, textcolor, 0, "%d%%", value);
++}
++
++static void draw_selector(int row, const char *label, const char *value, int enabled, int hover_l, int hover_r)
++{
++	int px = panel_x(), py = panel_y();
++	int cx = px + CTRL_X, y = py + row;
++	unsigned short col = enabled ? whitecolor : graycolor;
++
++	render_text(px + 16, y, enabled ? textcolor : graycolor, 0, label);
++
++	draw_box(cx, y - 2, cx + SEL_W, y + 11, IRGB(5, 4, 3), IRGB(14, 11, 6));
++	if (enabled) {
++		draw_box(cx, y - 2, cx + 14, y + 11, hover_l ? IRGB(16, 12, 6) : IRGB(10, 8, 4), IRGB(14, 11, 6));
++		draw_box(
++		    cx + SEL_W - 14, y - 2, cx + SEL_W, y + 11, hover_r ? IRGB(16, 12, 6) : IRGB(10, 8, 4), IRGB(14, 11, 6));
++		render_text(cx + 7, y, whitecolor, RENDER_ALIGN_CENTER, "<");
++		render_text(cx + SEL_W - 7, y, whitecolor, RENDER_ALIGN_CENTER, ">");
++	}
++	render_text(cx + SEL_W / 2, y, col, RENDER_ALIGN_CENTER, value);
++}
++
++static void draw_button(int sx, int sy, const char *text, int enabled, int hover)
++{
++	unsigned short fill = !enabled ? IRGB(6, 5, 4) : (hover ? IRGB(18, 13, 6) : IRGB(11, 8, 4));
++
++	draw_box(sx, sy, sx + BTN_W, sy + BTN_H, fill, IRGB(20, 16, 8));
++	render_text(sx + BTN_W / 2, sy + 3, enabled ? whitecolor : graycolor, RENDER_ALIGN_CENTER, text);
++}
++
++void options_display(void)
++{
++	int px, py, hov, pending, best, dw, dh;
++	char buf[64];
++	unsigned short gold = IRGB(31, 24, 10);
++
++	if (!is_open) {
++		return;
++	}
++
++	px = panel_x();
++	py = panel_y();
++	hov = dragging != H_NONE ? dragging : hit_test(mousex, mousey);
++	pending = changes_pending();
++
++	render_push_clip();
++	render_set_clip(0, 0, XRES, YRES);
++
++	render_rect_alpha(px + 4, py + 4, px + PW + 4, py + PH + 4, blackcolor, 120); // shadow
++	render_rect_alpha(px, py, px + PW, py + PH, IRGB(3, 3, 3), 235);
++	render_rect(px, py, px + PW, py + 17, IRGB(9, 7, 4));
++	render_line(px, py, px + PW, py, IRGB(20, 16, 8));
++	render_line(px, py + 17, px + PW, py + 17, IRGB(20, 16, 8));
++	render_line(px, py + PH, px + PW, py + PH, IRGB(20, 16, 8));
++	render_line(px, py, px, py + PH, IRGB(20, 16, 8));
++	render_line(px + PW, py, px + PW, py + PH + 1, IRGB(20, 16, 8));
++
++	render_text(px + PW / 2, py + 4, whitecolor, RENDER_ALIGN_CENTER, "Options");
++	render_text(px + PW - 11, py + 4, hov == H_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
++
++	// Audio
++	render_text(px + 10, py + 24, gold, 0, "Audio");
++	render_line(px + 10, py + 35, px + PW - 10, py + 35, IRGB(10, 8, 4));
++	draw_slider(ROW_SFX, sfx_percent(), hov == H_SFX, "Sound effects");
++	draw_slider(ROW_MUSIC, music_volume, hov == H_MUSIC, "Music");
++
++	// Graphics
++	render_text(px + 10, py + 84, gold, 0, "Graphics");
++	render_line(px + 10, py + 95, px + PW - 10, py + 95, IRGB(10, 8, 4));
++	draw_selector(ROW_MODE, "Display mode", mode_name[sel_mode], 1, hov == H_MODE_L, hov == H_MODE_R);
++
++	if (sel_mode == DISPMODE_BORDERLESS) {
++		sdl_get_display_size(&dw, &dh);
++		snprintf(buf, sizeof(buf), "%d x %d (desktop)", dw, dh);
++		draw_selector(ROW_RES, "Resolution", buf, 0, 0, 0);
++	} else if (res_cnt > 0) {
++		snprintf(buf, sizeof(buf), "%d x %d", res_w[sel_res], res_h[sel_res]);
++		draw_selector(ROW_RES, sel_mode == DISPMODE_WINDOWED ? "Window size" : "Resolution", buf, 1, hov == H_RES_L,
++		    hov == H_RES_R);
++	}
++
++	// note
++	best = sdl_best_scale();
++	if (pending) {
++		render_text(
++		    px + 16, py + ROW_NOTE, lightgraycolor, RENDER_TEXT_SMALL, "Press Apply to use the new display settings.");
++	} else if (best != sdl_scale) {
++		render_text(px + 16, py + ROW_NOTE, IRGB(31, 24, 10), RENDER_TEXT_SMALL,
++		    "Restart the client to fit the graphics to this size.");
++	} else if (sdl_display_mode == DISPMODE_WINDOWED) {
++		render_text(px + 16, py + ROW_NOTE, lightgraycolor, RENDER_TEXT_SMALL, "Drag the window's edges to resize it.");
++	}
++	render_text_fmt(px + 16, py + ROW_NOTE + 12, graycolor, RENDER_TEXT_SMALL, "Graphics scale: %dx", sdl_scale);
++
++	draw_button(px + PW / 2 - BTN_W - 8, py + PH - BTN_H - 10, "Apply", pending, hov == H_APPLY);
++	draw_button(px + PW / 2 + 8, py + PH - BTN_H - 10, "Close", 1, hov == H_DONE);
++
++	render_pop_clip();
++}
+diff --git a/src/sdl/sdl.h b/src/sdl/sdl.h
+index b3bf34b..ef624c2 100644
+--- a/src/sdl/sdl.h
++++ b/src/sdl/sdl.h
+@@ -45,6 +45,23 @@ DLL_EXPORT extern int sdl_frames;
+ DLL_EXPORT extern int sdl_multi;
+ 
+ extern int sound_volume;
++DLL_EXPORT extern int music_volume; // 0-100, for background music
++DLL_EXPORT float sound_get_music_volume(void);
++
++// Display modes for sdl_display_mode / sdl_set_display_mode()
++#define DISPMODE_WINDOWED   0 // normal window, resizable
++#define DISPMODE_BORDERLESS 1 // windowed fullscreen at desktop resolution
++#define DISPMODE_FULLSCREEN 2 // exclusive fullscreen at a chosen resolution
++
++#define MAX_RESOLUTIONS 64
++
++extern int sdl_display_mode; // -1 until sdl_init() decided, or set by the settings file before
++int sdl_set_display_mode(int mode, int width, int height);
++int sdl_get_resolutions(int *w, int *h, int max);
++void sdl_get_display_size(int *w, int *h);
++void sdl_get_mode_size(int *w, int *h);
++int sdl_scale_for_size(int width, int height);
++int sdl_best_scale(void);
+ 
+ void sdl_set_cursor(int cursor);
+ int init_sound(void);
+diff --git a/src/sdl/sdl_core.c b/src/sdl/sdl_core.c
+index 7148a8d..8635cad 100644
+--- a/src/sdl/sdl_core.c
++++ b/src/sdl/sdl_core.c
+@@ -53,6 +53,11 @@ DLL_EXPORT int sdl_multi = 4;
+ DLL_EXPORT int sdl_cache_size = 8000;
+ DLL_EXPORT int __yres = YRES0;
+ 
++// Display mode (DISPMODE_*). -1 means "decide from -w/-h/-o" as older clients did.
++int sdl_display_mode = -1;
++
++static void sdl_update_presentation(void);
++
+ // Worker thread management
+ 
+ struct zip_handles;
+@@ -143,8 +148,38 @@ int sdl_init(int width, int height, char *title, int monitor)
+ 		height = DM->h;
+ 	}
+ 
++	if (sdl_display_mode < DISPMODE_WINDOWED || sdl_display_mode > DISPMODE_FULLSCREEN) {
++		if (game_options & GO_FULL) {
++			sdl_display_mode = DISPMODE_FULLSCREEN;
++		} else if (width >= DM->w && height >= DM->h) {
++			sdl_display_mode = DISPMODE_BORDERLESS;
++		} else {
++			sdl_display_mode = DISPMODE_WINDOWED;
++		}
++	}
++
++	SDL_DisplayMode fullscreen_mode;
++	int have_fullscreen_mode = 0;
++
++	if (sdl_display_mode == DISPMODE_BORDERLESS) {
++		width = DM->w;
++		height = DM->h;
++	} else if (sdl_display_mode == DISPMODE_FULLSCREEN) {
++		if (SDL_GetClosestFullscreenDisplayMode(display_id, width, height, 0.0f, false, &fullscreen_mode)) {
++			width = fullscreen_mode.w;
++			height = fullscreen_mode.h;
++			have_fullscreen_mode = 1;
++		} else {
++			width = DM->w;
++			height = DM->h;
++		}
++	}
++
+ 	// Create window and position on selected monitor
+-	sdlwnd = SDL_CreateWindow(title, width, height, 0);
++	sdlwnd = SDL_CreateWindow(title, width, height, SDL_WINDOW_RESIZABLE);
++	if (sdlwnd) {
++		SDL_SetWindowMinimumSize(sdlwnd, 640, 360);
++	}
+ 	if (sdlwnd && monitor > 0) {
+ 		// Position window on the selected monitor
+ 		SDL_Rect display_bounds;
+@@ -163,17 +198,18 @@ int sdl_init(int width, int height, char *title, int monitor)
+ 	// Use display mode's logical size for scaling calculations
+ 	// SDL3 automatically handles pixel_density scaling to physical pixels
+ 	// Fall back to supplied width and height if less than logical, as this is required for windowed.
+-	if (width > DM->w || height > DM->h) {
++	if (sdl_display_mode != DISPMODE_FULLSCREEN && (width > DM->w || height > DM->h)) {
+ 		width = DM->w;
+ 		height = DM->h;
+ 	}
+ 
+-	if (game_options & GO_FULL) {
++	if (sdl_display_mode == DISPMODE_FULLSCREEN) {
+ 		// Exclusive fullscreen mode
++		SDL_SetWindowFullscreenMode(sdlwnd, have_fullscreen_mode ? &fullscreen_mode : NULL);
+ 		SDL_SetWindowFullscreen(sdlwnd, true);
+ 		// Wait for fullscreen transition to complete (prevents resize events on macOS)
+ 		SDL_SyncWindow(sdlwnd);
+-	} else if (width == DM->w && height == DM->h) {
++	} else if (sdl_display_mode == DISPMODE_BORDERLESS) {
+ 		// Borderless fullscreen desktop
+ 		SDL_SetWindowFullscreenMode(sdlwnd, NULL);
+ 		SDL_SetWindowFullscreen(sdlwnd, true);
+@@ -343,8 +379,10 @@ int sdl_init(int width, int height, char *title, int monitor)
+ 	}
+ 	note("SDL using %dx%d scale %d, options=%" PRIu64, XRES, YRES, sdl_scale, game_options);
+ 
+-	// Let SDL3 use its default rendering behavior
+-	// The game's sdl_scale and render_set_offset() handle all scaling and centering
++	// The game's sdl_scale and render_set_offset() handle scaling and centering for the
++	// size we start with. If the window size changes later, SDL's logical presentation
++	// scales the picture to fit (see sdl_update_presentation()).
++	sdl_update_presentation();
+ 
+ 	sdl_create_cursors();
+ 
+@@ -683,6 +721,21 @@ void sdl_loop(void)
+ 
+ 	while (SDL_PollEvent(&event)) {
+ 		switch (event.type) {
++		case SDL_EVENT_MOUSE_MOTION:
++		case SDL_EVENT_MOUSE_BUTTON_DOWN:
++		case SDL_EVENT_MOUSE_BUTTON_UP:
++			// Window coordinates to the game's pixel coordinates (they differ once the window was resized)
++			SDL_ConvertEventToRenderCoordinates(sdlren, &event);
++			break;
++		default:
++			break;
++		}
++
++		switch (event.type) {
++		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
++			sdl_update_presentation();
++			options_window_changed();
++			break;
+ 		case SDL_EVENT_QUIT:
+ 			quit = 1;
+ 			break;
+@@ -740,7 +793,214 @@ void sdl_loop(void)
+ 
+ void sdl_set_cursor_pos(int x, int y)
+ {
+-	SDL_WarpMouseInWindow(sdlwnd, (float)x, (float)y);
++	float wx = (float)x, wy = (float)y;
++
++	if (sdlren && !SDL_RenderCoordinatesToWindow(sdlren, (float)x, (float)y, &wx, &wy)) {
++		wx = (float)x;
++		wy = (float)y;
++	}
++	SDL_WarpMouseInWindow(sdlwnd, wx, wy);
++}
++
++// Largest graphics scale (1-4) that fits the given size in pixels. This is the scale
++// sdl_init() picks for that size.
++int sdl_scale_for_size(int width, int height)
++{
++	int scale;
++
++	for (scale = 4; scale > 1; scale--) {
++		if (width / XRES >= scale && height / YRES3 >= scale) {
++			break;
++		}
++	}
++	return scale;
++}
++
++// Scale the client would pick for the current window size after a restart
++int sdl_best_scale(void)
++{
++	int w = 0, h = 0;
++
++	if (!sdlren || !SDL_GetRenderOutputSize(sdlren, &w, &h) || w <= 0 || h <= 0) {
++		return sdl_scale;
++	}
++	return sdl_scale_for_size(w, h);
++}
++
++// Map the game's picture onto the window. If the window fits the game area at the
++// current scale and would not get a larger scale, draw pixel for pixel and center the
++// game as sdl_init() does. Otherwise scale the game area to fit the window.
++static void sdl_update_presentation(void)
++{
++	int w = 0, h = 0, gw, gh;
++	SDL_Texture *target;
++
++	if (!sdlren || !SDL_GetRenderOutputSize(sdlren, &w, &h) || w <= 0 || h <= 0) {
++		return;
++	}
++
++	gw = XRES * sdl_scale;
++	gh = YRES * sdl_scale;
++
++	target = SDL_GetRenderTarget(sdlren);
++	SDL_SetRenderTarget(sdlren, NULL);
++
++	if (w >= gw && h >= gh && sdl_scale_for_size(w, h) <= sdl_scale) {
++		SDL_SetRenderLogicalPresentation(sdlren, w, h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
++		render_set_offset((w / sdl_scale - XRES) / 2, (h / sdl_scale - YRES) / 2);
++	} else {
++		SDL_SetRenderLogicalPresentation(sdlren, gw, gh, SDL_LOGICAL_PRESENTATION_LETTERBOX);
++		render_set_offset(0, 0);
++	}
++
++	SDL_SetRenderTarget(sdlren, target);
++}
++
++static SDL_DisplayID sdl_window_display(void)
++{
++	SDL_DisplayID id = sdlwnd ? SDL_GetDisplayForWindow(sdlwnd) : 0;
++
++	return id ? id : SDL_GetPrimaryDisplay();
++}
++
++// Desktop resolution of the monitor the window is on
++void sdl_get_display_size(int *w, int *h)
++{
++	const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(sdl_window_display());
++
++	*w = dm ? dm->w : 1920;
++	*h = dm ? dm->h : 1080;
++}
++
++// Size that belongs to the current display mode: the window size when windowed,
++// the screen mode when fullscreen.
++void sdl_get_mode_size(int *w, int *h)
++{
++	const SDL_DisplayMode *fm;
++
++	*w = *h = 0;
++	if (!sdlwnd) {
++		return;
++	}
++	if (sdl_display_mode == DISPMODE_FULLSCREEN && (fm = SDL_GetWindowFullscreenMode(sdlwnd))) {
++		*w = fm->w;
++		*h = fm->h;
++		return;
++	}
++	if (sdl_display_mode == DISPMODE_BORDERLESS) {
++		sdl_get_display_size(w, h);
++		return;
++	}
++	SDL_GetWindowSize(sdlwnd, w, h);
++}
++
++static int sdl_add_resolution(int *rw, int *rh, int cnt, int max, int w, int h)
++{
++	for (int i = 0; i < cnt; i++) {
++		if (rw[i] == w && rh[i] == h) {
++			return cnt;
++		}
++	}
++	if (cnt >= max) {
++		return cnt;
++	}
++	rw[cnt] = w;
++	rh[cnt] = h;
++	return cnt + 1;
++}
++
++// List of resolutions to offer, smallest first: the monitor's fullscreen modes plus
++// common window sizes that fit on the desktop.
++int sdl_get_resolutions(int *rw, int *rh, int max)
++{
++	static const int common[][2] = {{800, 600}, {1024, 768}, {1280, 720}, {1280, 800}, {1280, 1024}, {1366, 768},
++	    {1440, 900}, {1600, 900}, {1600, 1200}, {1680, 1050}, {1920, 1080}, {1920, 1200}, {2560, 1080}, {2560, 1440},
++	    {2560, 1600}, {3440, 1440}, {3840, 2160}};
++	int cnt = 0, dw, dh, n = 0;
++	SDL_DisplayMode **modes;
++
++	sdl_get_display_size(&dw, &dh);
++
++	modes = SDL_GetFullscreenDisplayModes(sdl_window_display(), &n);
++	if (modes) {
++		for (int i = 0; i < n; i++) {
++			if (modes[i]->w >= 800 && modes[i]->h >= 450) {
++				cnt = sdl_add_resolution(rw, rh, cnt, max, modes[i]->w, modes[i]->h);
++			}
++		}
++		SDL_free(modes);
++	}
++	for (size_t i = 0; i < sizeof(common) / sizeof(common[0]); i++) {
++		if (common[i][0] <= dw && common[i][1] <= dh) {
++			cnt = sdl_add_resolution(rw, rh, cnt, max, common[i][0], common[i][1]);
++		}
++	}
++	cnt = sdl_add_resolution(rw, rh, cnt, max, dw, dh);
++
++	// sort by width, then height
++	for (int i = 1; i < cnt; i++) {
++		int w = rw[i], h = rh[i], j = i - 1;
++		while (j >= 0 && (rw[j] > w || (rw[j] == w && rh[j] > h))) {
++			rw[j + 1] = rw[j];
++			rh[j + 1] = rh[j];
++			j--;
++		}
++		rw[j + 1] = w;
++		rh[j + 1] = h;
++	}
++	return cnt;
++}
++
++// Switch between windowed, borderless (windowed fullscreen) and exclusive fullscreen.
++// width and height are the window size or the screen mode; borderless ignores them.
++int sdl_set_display_mode(int mode, int width, int height)
++{
++	SDL_DisplayID disp;
++	SDL_DisplayMode fm;
++	SDL_Rect usable;
++
++	if (!sdlwnd || mode < DISPMODE_WINDOWED || mode > DISPMODE_FULLSCREEN) {
++		return 0;
++	}
++	disp = sdl_window_display();
++
++	if (mode == DISPMODE_FULLSCREEN) {
++		if (width > 0 && height > 0 && SDL_GetClosestFullscreenDisplayMode(disp, width, height, 0.0f, false, &fm)) {
++			SDL_SetWindowFullscreenMode(sdlwnd, &fm);
++		} else {
++			SDL_SetWindowFullscreenMode(sdlwnd, NULL);
++		}
++		SDL_SetWindowFullscreen(sdlwnd, true);
++	} else if (mode == DISPMODE_BORDERLESS) {
++		SDL_SetWindowFullscreenMode(sdlwnd, NULL);
++		SDL_SetWindowFullscreen(sdlwnd, true);
++	} else {
++		SDL_SetWindowFullscreen(sdlwnd, false);
++		SDL_SyncWindow(sdlwnd);
++		SDL_SetWindowBordered(sdlwnd, true);
++		SDL_SetWindowResizable(sdlwnd, true);
++		if (width > 0 && height > 0) {
++			if (SDL_GetDisplayUsableBounds(disp, &usable)) {
++				if (width > usable.w) {
++					width = usable.w;
++				}
++				if (height > usable.h) {
++					height = usable.h;
++				}
++			}
++			SDL_SetWindowSize(sdlwnd, width, height);
++			SDL_SetWindowPosition(
++			    sdlwnd, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(disp), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
++		}
++	}
++	SDL_SyncWindow(sdlwnd);
++
++	sdl_display_mode = mode;
++	sdl_update_presentation();
++
++	note("Display mode %d, %dx%d", mode, width, height);
++
++	return 1;
+ }
+ 
+ void sdl_capture_mouse(int flag)
+diff --git a/src/sdl/sound.c b/src/sdl/sound.c
+index 5a53a4e..7f07ca7 100644
+--- a/src/sdl/sound.c
++++ b/src/sdl/sound.c
+@@ -117,6 +117,7 @@ static const char *sfx_fallback[] = {
+ static int sfx_fallback_cnt = (int)(sizeof(sfx_fallback) / sizeof(sfx_fallback[0])) - 1;
+ 
+ int sound_volume = 128;
++DLL_EXPORT int music_volume = 100;
+ static uint64_t time_play_sound = 0;
+ 
+ static MIX_Audio *sound_effect[MAXSOUND];
+@@ -499,12 +500,8 @@ static void play_sdl_sound(unsigned int nr, int distance, int angle)
+ 	// Set 3D position
+ 	MIX_SetTrack3DPosition(track, &position);
+ 
+-	// Set volume gain
+-	// Note: sound_volume is an int (0 to -128) for backwards compatibility with the server protocol.
+-	// 0 = maximum volume (gain 1.0), -128 = silence (gain 0.0)
+-	// Convert from negative attenuation to positive gain: gain = 1.0 + (sound_volume / 128.0)
+-	float gain = 1.0f + ((float)sound_volume / 128.0f);
+-	MIX_SetTrackGain(track, gain);
++	// Set volume gain from the sound effects volume (sound_volume, 0-128)
++	MIX_SetTrackGain(track, sound_get_master_volume());
+ 
+ 	// Assign the audio to the track and play it
+ 	MIX_SetTrackAudio(track, sound_effect[nr]);
+@@ -940,6 +937,21 @@ void sound_fade_tick(void)
+  * Get the master sound effects volume (from user settings).
+  * @return Volume multiplier (0.0 to 1.0)
+  */
++/**
++ * Music volume chosen in the options menu, 0.0 (off) to 1.0 (full).
++ * Background music should multiply its gain by this.
++ */
++DLL_EXPORT float sound_get_music_volume(void)
++{
++	if (music_volume <= 0) {
++		return 0.0f;
++	}
++	if (music_volume >= 100) {
++		return 1.0f;
++	}
++	return (float)music_volume / 100.0f;
++}
++
+ DLL_EXPORT float sound_get_master_volume(void)
+ {
+ 	// sound_volume is 0-128 where 128 is full volume
+-- 
+2.43.0
+

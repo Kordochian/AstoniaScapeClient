@@ -1,0 +1,459 @@
+From 82afdda237bdad746ad9228225219a5f2d3721f9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 08:34:17 +0000
+Subject: [PATCH] Native Windows build with Visual Studio (clang-cl) + CMake +
+ vcpkg
+
+Adds CMakeLists.txt, CMakePresets.json, vcpkg.json and build-msvc.bat so the
+client builds on Windows without MSYS2. The crash handler uses DbgHelp
+instead of dwarfstack when built with the Microsoft toolchain.
+---
+ .gitignore                       |   6 ++
+ CMakeLists.txt                   | 151 +++++++++++++++++++++++++++++++
+ CMakePresets.json                |  58 ++++++++++++
+ build-msvc.bat                   |  62 +++++++++++++
+ src/game/crash_handler_windows.c |  84 +++++++++++++++++
+ vcpkg.json                       |  14 +++
+ 6 files changed, 375 insertions(+)
+ create mode 100644 CMakeLists.txt
+ create mode 100644 CMakePresets.json
+ create mode 100644 build-msvc.bat
+ create mode 100644 vcpkg.json
+
+diff --git a/.gitignore b/.gitignore
+index a882b5e..faf526f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -61,3 +61,9 @@ ubsan-report.txt.*
+ # Distribution packages
+ windows_client.zip
+ linux_client.tar.gz
++
++# Windows CMake/vcpkg build
++!vcpkg.json
++!CMakePresets.json
++/out/
++vcpkg_installed/
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+index 0000000..50b79d4
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,151 @@
++# Native Windows build of the Astonia client with Visual Studio (clang-cl) and vcpkg.
++# No MSYS2 needed. See WINDOWS-BUILD.md, or just run build-msvc.bat.
++#
++# The code uses GCC/Clang extensions (__atomic builtins, __attribute__), so it is
++# compiled with clang-cl, the Clang that ships with Visual Studio
++# ("C++ Clang tools for Windows" component). It is MSVC-ABI and links with the
++# normal Microsoft linker and libraries.
++#
++# The MSYS2 / Linux / macOS Makefiles are unchanged and still work.
++
++cmake_minimum_required(VERSION 3.25)
++
++if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
++    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
++endif()
++
++project(astonia_client LANGUAGES C RC)
++
++if(NOT WIN32)
++    message(FATAL_ERROR "CMakeLists.txt is for the Windows build. On Linux/macOS use make.")
++endif()
++if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
++    message(FATAL_ERROR
++        "This client needs clang-cl (it uses __atomic builtins that cl.exe does not have).\n"
++        "Install the Visual Studio component \"C++ Clang tools for Windows\" and use a preset "
++        "from CMakePresets.json (they select clang-cl), or run build-msvc.bat.")
++endif()
++
++option(USE_MIMALLOC "Use mimalloc as the allocator" ON)
++option(DEVELOPER "Build with -DDEVELOPER (developer commands and checks)" OFF)
++set(DEFAULT_SERVER "" CACHE STRING "Override the default server address (empty = keep 10.1.0.36 from main.c)")
++
++find_package(SDL3 CONFIG REQUIRED)
++find_package(SDL3_mixer CONFIG REQUIRED)
++find_package(PNG REQUIRED)
++find_package(libzip CONFIG REQUIRED)
++find_package(ZLIB REQUIRED)
++if(USE_MIMALLOC)
++    find_package(mimalloc CONFIG REQUIRED)
++endif()
++
++# ---------------------------------------------------------------------------
++# astonia_net (Rust networking library) built with cargo for the MSVC target
++# ---------------------------------------------------------------------------
++find_program(CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin" REQUIRED)
++set(RUST_TARGET x86_64-pc-windows-msvc)
++set(CARGO_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
++set(ASTONIA_NET_OUT "${CARGO_TARGET_DIR}/${RUST_TARGET}/release")
++file(GLOB ASTONIA_NET_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/astonia_net/src/*.rs")
++add_custom_command(
++    OUTPUT "${ASTONIA_NET_OUT}/astonia_net.dll" "${ASTONIA_NET_OUT}/astonia_net.dll.lib"
++    COMMAND "${CARGO}" build --release --target ${RUST_TARGET}
++            --manifest-path "${CMAKE_SOURCE_DIR}/astonia_net/Cargo.toml"
++            --target-dir "${CARGO_TARGET_DIR}"
++    DEPENDS ${ASTONIA_NET_SOURCES} "${CMAKE_SOURCE_DIR}/astonia_net/Cargo.toml"
++    COMMENT "Building astonia_net (Rust, ${RUST_TARGET})"
++    VERBATIM)
++add_custom_target(astonia_net_build DEPENDS "${ASTONIA_NET_OUT}/astonia_net.dll")
++add_library(astonia_net SHARED IMPORTED)
++set_target_properties(astonia_net PROPERTIES
++    IMPORTED_LOCATION "${ASTONIA_NET_OUT}/astonia_net.dll"
++    IMPORTED_IMPLIB "${ASTONIA_NET_OUT}/astonia_net.dll.lib")
++add_dependencies(astonia_net astonia_net_build)
++
++# ---------------------------------------------------------------------------
++# moac.exe
++# ---------------------------------------------------------------------------
++# Same object list as build/make/Makefile.windows
++set(MOAC_SOURCES
++    src/gui/gui_core.c src/gui/gui_input.c src/gui/gui_display.c src/gui/gui_inventory.c
++    src/gui/gui_buttons.c src/gui/gui_map.c
++    src/client/client.c src/client/protocol.c src/client/skill.c
++    src/game/game_core.c src/game/game_effects.c src/game/game_lighting.c src/game/game_display.c
++    src/game/render.c src/game/font.c src/game/main.c src/game/sprite.c src/game/sprite_config.c
++    src/game/memory.c
++    src/modder/modder.c
++    src/sdl/sdl_core.c src/sdl/sdl_texture.c src/sdl/sdl_image.c src/sdl/sdl_effects.c
++    src/sdl/sdl_draw.c src/sdl/sound.c
++    src/game/resource.rc src/helper/helper.c
++    src/gui/dots.c src/gui/display.c src/gui/teleport.c src/gui/color.c src/gui/cmd.c
++    src/gui/questlog.c src/gui/context.c src/gui/hover.c src/gui/minimap.c src/gui/options.c
++    src/modder/sharedmem_windows.c src/game/crash_handler_windows.c
++    src/game/memory_windows.c src/gui/draghack_windows.c src/client/unique_windows.c
++    src/game/version.c
++    src/lib/cjson/cJSON.c
++)
++
++add_executable(moac WIN32 ${MOAC_SOURCES})
++
++# Put moac.exe (and, through vcpkg, the DLLs it needs) in bin\ like the Makefile does,
++# for every configuration.
++foreach(cfg "" _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
++    set_target_properties(moac PROPERTIES
++        RUNTIME_OUTPUT_DIRECTORY${cfg} "${CMAKE_SOURCE_DIR}/bin"
++        ARCHIVE_OUTPUT_DIRECTORY${cfg} "${CMAKE_SOURCE_DIR}/lib"
++        PDB_OUTPUT_DIRECTORY${cfg} "${CMAKE_SOURCE_DIR}/bin")
++endforeach()
++
++# moac.exe exports functions for mods (amod.dll); this also writes lib\moac.lib.
++set_target_properties(moac PROPERTIES
++    ENABLE_EXPORTS ON
++    C_STANDARD 17
++    C_STANDARD_REQUIRED ON
++    C_EXTENSIONS ON
++    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
++
++# The source root is on the path so resource.rc finds res/moa3.ico.
++target_include_directories(moac PRIVATE include src "${CMAKE_SOURCE_DIR}")
++
++target_compile_definitions(moac PRIVATE
++    _WIN32_WINNT=0x0601
++    _CRT_SECURE_NO_WARNINGS
++    _CRT_NONSTDC_NO_WARNINGS
++    _WINSOCK_DEPRECATED_NO_WARNINGS
++    STORE_UNIQUE
++    ENABLE_CRASH_HANDLER
++    ENABLE_SHAREDMEM
++    ENABLE_DRAGHACK
++    USE_MIMALLOC=$<BOOL:${USE_MIMALLOC}>
++    SDL_FUNCTION_POINTER_IS_VOID_POINTER
++    $<IF:$<OR:$<CONFIG:Debug>,$<BOOL:${DEVELOPER}>>,DEVELOPER,NDEBUG>)
++if(DEFAULT_SERVER)
++    target_compile_definitions(moac PRIVATE DEFAULT_SERVER="${DEFAULT_SERVER}")
++endif()
++
++# clang-cl: keep -Wall -Wextra like the Makefile, but no -Werror, and no warnings
++# for the bundled cJSON.
++target_compile_options(moac PRIVATE
++    $<$<COMPILE_LANGUAGE:C>:/W3 -Wextra -Wno-unused-parameter -Wno-sign-compare
++        -Wno-missing-field-initializers -Wno-deprecated-declarations
++        -Wno-unknown-warning-option -Wno-unused-but-set-global
++        /Zi -fno-omit-frame-pointer>)
++set_source_files_properties(src/lib/cjson/cJSON.c PROPERTIES COMPILE_OPTIONS "-w")
++
++# Always write moac.pdb so the crash handler can print function names and lines.
++target_link_options(moac PRIVATE /DEBUG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA)
++
++target_link_libraries(moac PRIVATE
++    SDL3::SDL3
++    SDL3_mixer::SDL3_mixer
++    PNG::PNG
++    libzip::zip
++    ZLIB::ZLIB
++    $<$<BOOL:${USE_MIMALLOC}>:$<IF:$<TARGET_EXISTS:mimalloc>,mimalloc,mimalloc-static>>
++    astonia_net
++    ws2_32 wsock32 psapi dbghelp)
++
++# Copy astonia_net.dll next to moac.exe (vcpkg copies the other DLLs).
++add_custom_command(TARGET moac POST_BUILD
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ASTONIA_NET_OUT}/astonia_net.dll" "$<TARGET_FILE_DIR:moac>"
++    VERBATIM)
+diff --git a/CMakePresets.json b/CMakePresets.json
+new file mode 100644
+index 0000000..1b56191
+--- /dev/null
++++ b/CMakePresets.json
+@@ -0,0 +1,58 @@
++{
++  "version": 6,
++  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
++  "configurePresets": [
++    {
++      "name": "windows-base",
++      "hidden": true,
++      "binaryDir": "${sourceDir}/out/build/${presetName}",
++      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
++      "cacheVariables": {
++        "VCPKG_TARGET_TRIPLET": "x64-windows"
++      },
++      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
++    },
++    {
++      "name": "vs2026",
++      "displayName": "Visual Studio 2026 (clang-cl, x64)",
++      "inherits": "windows-base",
++      "generator": "Visual Studio 18 2026",
++      "architecture": "x64",
++      "toolset": "ClangCL"
++    },
++    {
++      "name": "vs2022",
++      "displayName": "Visual Studio 2022 (clang-cl, x64)",
++      "inherits": "windows-base",
++      "generator": "Visual Studio 17 2022",
++      "architecture": "x64",
++      "toolset": "ClangCL"
++    },
++    {
++      "name": "ninja",
++      "displayName": "Ninja + clang-cl (Developer prompt, Release)",
++      "inherits": "windows-base",
++      "generator": "Ninja",
++      "architecture": { "value": "x64", "strategy": "external" },
++      "cacheVariables": {
++        "CMAKE_C_COMPILER": "clang-cl",
++        "CMAKE_BUILD_TYPE": "Release"
++      },
++      "vendor": {
++        "microsoft.com/VisualStudioSettings/CMake/1.0": { "intelliSenseMode": "windows-clang-x64" }
++      }
++    },
++    {
++      "name": "ninja-debug",
++      "displayName": "Ninja + clang-cl (Developer prompt, Debug)",
++      "inherits": "ninja",
++      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
++    }
++  ],
++  "buildPresets": [
++    { "name": "vs2026", "configurePreset": "vs2026", "configuration": "Release" },
++    { "name": "vs2022", "configurePreset": "vs2022", "configuration": "Release" },
++    { "name": "ninja", "configurePreset": "ninja" },
++    { "name": "ninja-debug", "configurePreset": "ninja-debug" }
++  ]
++}
+diff --git a/build-msvc.bat b/build-msvc.bat
+new file mode 100644
+index 0000000..792861e
+--- /dev/null
++++ b/build-msvc.bat
+@@ -0,0 +1,62 @@
++@echo off
++rem Build the Astonia client natively on Windows with Visual Studio (clang-cl) + vcpkg.
++rem No MSYS2 needed. Run from anywhere; output goes to bin\moac.exe next to this file.
++rem
++rem   build-msvc.bat           Release build
++rem   build-msvc.bat debug     Debug build (DEVELOPER on)
++rem
++rem Needs: Visual Studio 2022 or 2026 with "Desktop development with C++",
++rem        "C++ Clang tools for Windows" and "vcpkg package manager";
++rem        Rust from https://rustup.rs ; git.
++
++setlocal
++cd /d "%~dp0"
++
++set PRESET=ninja
++if /i "%~1"=="debug" set PRESET=ninja-debug
++
++set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
++if not exist "%VSWHERE%" (
++    echo Visual Studio Installer not found. Install Visual Studio 2022 or 2026 first.
++    exit /b 1
++)
++for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALL=%%i"
++if not defined VSINSTALL (
++    echo No Visual Studio with the C++ workload found. Add "Desktop development with C++".
++    exit /b 1
++)
++echo Using Visual Studio in %VSINSTALL%
++
++call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64 -no_logo
++if errorlevel 1 exit /b 1
++
++if not exist "%VSINSTALL%\VC\Tools\Llvm\x64\bin\clang-cl.exe" (
++    echo clang-cl not found. In the Visual Studio Installer, add the component
++    echo "C++ Clang tools for Windows" ^(Individual components^).
++    exit /b 1
++)
++set "PATH=%VSINSTALL%\VC\Tools\Llvm\x64\bin;%PATH%"
++
++if not defined VCPKG_ROOT if exist "%VSINSTALL%\VC\vcpkg\vcpkg.exe" set "VCPKG_ROOT=%VSINSTALL%\VC\vcpkg"
++if not defined VCPKG_ROOT (
++    echo vcpkg not found. Add the "vcpkg package manager" component in the Visual Studio
++    echo Installer, or clone https://github.com/microsoft/vcpkg and set VCPKG_ROOT to it.
++    exit /b 1
++)
++
++where cargo >nul 2>nul || if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
++where cargo >nul 2>nul || (
++    echo Rust not found. Install it from https://rustup.rs ^(default options^) and run this again.
++    exit /b 1
++)
++rustup target add x86_64-pc-windows-msvc >nul 2>nul
++
++cmake --preset %PRESET%
++if errorlevel 1 exit /b 1
++cmake --build --preset %PRESET%
++if errorlevel 1 exit /b 1
++
++echo.
++echo Done: %~dp0bin\moac.exe
++echo Copy res\ from the official v1.1.3 client next to bin\ before running it.
++endlocal
+diff --git a/src/game/crash_handler_windows.c b/src/game/crash_handler_windows.c
+index 297f352..0afc296 100644
+--- a/src/game/crash_handler_windows.c
++++ b/src/game/crash_handler_windows.c
+@@ -1,7 +1,17 @@
+ #include <windows.h>
++#ifdef _MSC_VER
++#include <dbghelp.h>
++// Same line-number codes dwarfstack passes to errPrint()
++#define DWST_BASE_ADDR   -1
++#define DWST_NOT_FOUND   -2
++#define DWST_NO_DBG_SYM  -3
++#define DWST_NO_SRC_FILE -4
++#else
+ #include <dwarfstack.h>
++#endif
+ 
+ #include <stdio.h>
++#include <string.h>
+ 
+ #include "astonia.h"
+ #include "../sdl/sdl.h"
+@@ -81,6 +91,76 @@ static void errPrint(uint64_t addr, const char *filename, int lineno, const char
+ 	}
+ }
+ 
++#ifdef _MSC_VER
++// MSVC / clang-cl build: dwarfstack only reads DWARF (MinGW) debug info, so walk
++// the stack with DbgHelp instead. Function names and lines come from moac.pdb.
++static void dbghelp_print_stack(CONTEXT *ctx, int *count)
++{
++	HANDLE process = GetCurrentProcess();
++	HANDLE thread = GetCurrentThread();
++	CONTEXT c = *ctx;
++	STACKFRAME64 frame;
++	DWORD64 last_base = 0;
++	char modname[MAX_PATH];
++	union {
++		SYMBOL_INFO info;
++		char buf[sizeof(SYMBOL_INFO) + 256];
++	} sym;
++
++	SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
++	SymInitialize(process, NULL, TRUE);
++
++	memset(&frame, 0, sizeof(frame));
++	frame.AddrPC.Offset = c.Rip;
++	frame.AddrPC.Mode = AddrModeFlat;
++	frame.AddrFrame.Offset = c.Rbp;
++	frame.AddrFrame.Mode = AddrModeFlat;
++	frame.AddrStack.Offset = c.Rsp;
++	frame.AddrStack.Mode = AddrModeFlat;
++
++	for (int depth = 0; depth < 64; depth++) {
++		if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, thread, &frame, &c, NULL, SymFunctionTableAccess64,
++		        SymGetModuleBase64, NULL)) {
++			break;
++		}
++		DWORD64 addr = frame.AddrPC.Offset;
++		if (!addr) {
++			break;
++		}
++
++		DWORD64 base = SymGetModuleBase64(process, addr);
++		modname[0] = 0;
++		if (!base || !GetModuleFileNameA((HMODULE)(uintptr_t)base, modname, sizeof(modname))) {
++			strcpy(modname, "?");
++		}
++		if (base && base != last_base) {
++			errPrint(base, modname, DWST_BASE_ADDR, NULL, count, 0);
++			last_base = base;
++		}
++
++		memset(&sym, 0, sizeof(sym));
++		sym.info.SizeOfStruct = sizeof(SYMBOL_INFO);
++		sym.info.MaxNameLen = 255;
++		DWORD64 symdisp = 0;
++		const char *funcname = SymFromAddr(process, addr, &symdisp, &sym.info) ? sym.info.Name : NULL;
++
++		IMAGEHLP_LINE64 line;
++		DWORD linedisp = 0;
++		memset(&line, 0, sizeof(line));
++		line.SizeOfStruct = sizeof(line);
++		if (SymGetLineFromAddr64(process, addr, &linedisp, &line)) {
++			errPrint(addr, line.FileName, (int)line.LineNumber, funcname, count, 0);
++		} else if (funcname) {
++			errPrint(addr, modname, 0, funcname, count, 0);
++		} else {
++			errPrint(addr, modname, DWST_NO_DBG_SYM, NULL, count, 0);
++		}
++	}
++
++	SymCleanup(process);
++}
++#endif
++
+ static LONG WINAPI exceptionPrinter(LPEXCEPTION_POINTERS ep)
+ {
+ 	void xlog(FILE * logfp, char *format, ...);
+@@ -144,7 +224,11 @@ static LONG WINAPI exceptionPrinter(LPEXCEPTION_POINTERS ep)
+ 	}
+ 
+ 	int count = 0;
++#ifdef _MSC_VER
++	dbghelp_print_stack(ep->ContextRecord, &count);
++#else
+ 	dwstOfException(ep->ContextRecord, &errPrint, &count);
++#endif
+ 
+ 	fflush(stderr);
+ 	fflush(errorfp);
+diff --git a/vcpkg.json b/vcpkg.json
+new file mode 100644
+index 0000000..95100bd
+--- /dev/null
++++ b/vcpkg.json
+@@ -0,0 +1,14 @@
++{
++  "name": "astonia-client",
++  "version-string": "3.5",
++  "description": "Astonia community client, native Windows build (Visual Studio + clang-cl)",
++  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
++  "dependencies": [
++    { "name": "sdl3", "default-features": false },
++    { "name": "sdl3-mixer", "default-features": false },
++    "libpng",
++    { "name": "libzip", "default-features": false },
++    "zlib",
++    "mimalloc"
++  ]
++}
+-- 
+2.43.0
+

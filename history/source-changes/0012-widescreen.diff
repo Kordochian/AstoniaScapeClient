@@ -1,0 +1,570 @@
+diff -ru orig/src/amod/amod.h work/src/amod/amod.h
+--- orig/src/amod/amod.h	2026-10-12 02:13:26.853163074 +0000
++++ work/src/amod/amod.h	2026-10-12 02:13:36.008357786 +0000
+@@ -303,7 +303,9 @@
+ DLL_IMPORT int frames_per_second;
+ 
+ // --- Display Settings ---
++DLL_IMPORT extern int __xres;
+ DLL_IMPORT extern int __yres;
++DLL_IMPORT extern int gui_dx;
+ DLL_IMPORT int want_width;
+ DLL_IMPORT int want_height;
+ DLL_IMPORT int sdl_scale;
+diff -ru orig/src/amod/amod_structs.h work/src/amod/amod_structs.h
+--- orig/src/amod/amod_structs.h	2026-10-12 02:13:26.853438467 +0000
++++ work/src/amod/amod_structs.h	2026-10-12 02:13:36.008199799 +0000
+@@ -181,7 +181,7 @@
+ #define RENDERFX_NORMAL_LIGHT 15
+ #define RENDERFX_BRIGHT       0
+ 
+-#define XRES 800
++#define XRES (__xres)
+ #define YRES (__yres)
+ 
+ struct ddfx {
+diff -ru orig/src/astonia.h work/src/astonia.h
+--- orig/src/astonia.h	2026-10-12 02:13:26.851403178 +0000
++++ work/src/astonia.h	2026-10-12 02:13:36.007966300 +0000
+@@ -51,8 +51,12 @@
+ #define FDX     40 // width of a map tile
+ #define FDY     20 // height of a map tile
+ 
+-#define XRES  800
++#define XRES  (__xres) // width of the game area; follows the window (XRES0..XRESMAX)
+ #define YRES  (__yres)
++#define XRES0 800 // width of the GUI (top bar, bottom window) and the minimum width
++#define XRESMAX 1600 // the server sends 40 tiles around the player: 1600x800 pixels of map
++#define YRESMIN 450
++#define YRESMAX 900
+ #define YRES0 600 // 4:3 aspect ratio
+ #define YRES1 650 // Tall
+ #define YRES2 500 // 16:10 aspect ratio
+@@ -139,7 +143,10 @@
+ #define MAX_PATH 260
+ #endif
+ 
++DLL_EXPORT extern int __xres;
+ DLL_EXPORT extern int __yres;
++// left edge of the 800 pixel wide GUI column, (XRES - XRES0) / 2
++DLL_EXPORT extern int gui_dx;
+ extern int quit;
+ DLL_EXPORT extern int frames_per_second;
+ // 1 until the player passes -k; sdl_init then auto-defaults frames_per_second to
+diff -ru orig/src/game/game_display.c work/src/game/game_display.c
+--- orig/src/game/game_display.c	2026-10-12 02:13:26.852467771 +0000
++++ work/src/game/game_display.c	2026-10-12 02:15:08.359474243 +0000
+@@ -1446,7 +1446,7 @@
+ 			y = doty(DOT_MBR) - 20;
+ 		}
+ 
+-		render_text(400, y - cnt * 12, col, RENDER_TEXT_LARGE | RENDER_TEXT_FRAMED | RENDER_TEXT_CENTER, otext[n].text);
++		render_text(XRES / 2, y - cnt * 12, col, RENDER_TEXT_LARGE | RENDER_TEXT_FRAMED | RENDER_TEXT_CENTER, otext[n].text);
+ 		cnt++;
+ 	}
+ }
+diff -ru orig/src/gui/context.c work/src/gui/context.c
+--- orig/src/gui/context.c	2026-10-12 02:13:26.851513501 +0000
++++ work/src/gui/context.c	2026-10-12 02:15:08.356684968 +0000
+@@ -615,7 +615,7 @@
+ 		return;
+ 	}
+ 
+-	if (mousex >= dotx(DOT_MTL) && mousey >= doty(DOT_MTL) && mousex < dotx(DOT_MBR) && mousey < doty(DOT_MBR)) {
++	if (gui_point_in_map(mousex, mousey)) {
+ 		csel = chrsel;
+ 		isel = itmsel;
+ 		msel = mapsel;
+diff -ru orig/src/gui/display.c work/src/gui/display.c
+--- orig/src/gui/display.c	2026-10-12 02:13:26.851658470 +0000
++++ work/src/gui/display.c	2026-10-12 02:15:19.206529899 +0000
+@@ -645,7 +645,7 @@
+ 			col = textcolor;
+ 		}
+ 
+-		x = 10 + u++ * ((XRES - 20) / 10);
++		x = 10 + u++ * ((XRES0 - 20) / 10);
+ 
+ 		if (keytab[i].skill == -1) {
+ 			continue;
+@@ -1047,7 +1047,7 @@
+ 		step = (int)(50 - 50 * rage / value[0][V3_RAGE]);
+ 	}
+ 	render_push_clip();
+-	render_more_clip(0, 0, 800, doty(DOT_SSP) + 119 - 68);
++	render_more_clip(0, 0, XRES, doty(DOT_SSP) + 119 - 68);
+ 	render_sprite(997, dotx(DOT_SSP) + 3 * 10, doty(DOT_SSP) + step, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
+ 	render_pop_clip();
+ 
+@@ -1060,12 +1060,15 @@
+ 
+ void display_game_special(void)
+ {
+-	int dx;
++	int dx, ox = render_offset_x(), oy = render_offset_y();
+ 
+ 	if (!display_gfx) {
+ 		return;
+ 	}
+ 
++	// the arrows use positions in the 800 pixel GUI column
++	render_set_offset(ox + gui_dx, oy);
++
+ 	switch (display_gfx) {
+ 	// TODO: these are the ugly tutorial arrows
+ 	// since we want to re-write the input parts of the
+@@ -1149,6 +1152,8 @@
+ 		render_sprite(display_gfx, 550, 210, 14, 0);
+ 		break;
+ 	}
++
++	render_set_offset(ox, oy);
+ }
+ 
+ int action_enabled = 1;
+diff -ru orig/src/gui/dots.c work/src/gui/dots.c
+--- orig/src/gui/dots.c	2026-10-12 02:13:26.851629584 +0000
++++ work/src/gui/dots.c	2026-10-12 02:14:28.889815034 +0000
+@@ -85,28 +85,31 @@
+ void init_dots(void)
+ {
+ 	int i, x, y, xc, yc;
++	// The top bar and the bottom window are 800 pixels wide pictures. They stay that size,
++	// centered; the map fills the whole game area behind them.
++	int gx = gui_dx;
+ 
+ 	// top left, bottom right of screen
+ 	set_dot(DOT_TL, 0, 0, 0);
+ 	set_dot(DOT_BR, XRES, YRES, 0);
+ 
+ 	// top and bottom window
+-	set_dot(DOT_TOP, 0, 0, !stop ? 0 : DOTF_TOPOFF);
++	set_dot(DOT_TOP, gx, 0, !stop ? 0 : DOTF_TOPOFF);
+ 	if (!sbot) {
+-		set_dot(DOT_BOT, 0, YRES - 170, 0);
++		set_dot(DOT_BOT, gx, YRES - 170, 0);
+ 	} else {
+-		set_dot(DOT_BOT, 0, YRES - 130, 0);
++		set_dot(DOT_BOT, gx, YRES - 130, 0);
+ 	}
+-	set_dot(DOT_BO2, XRES, YRES, 0);
++	set_dot(DOT_BO2, gx + XRES0, YRES, 0);
+ 
+ 	// equipment, inventory, container. center of first displayed item.
+-	set_dot(DOT_WEA, 180, 20, !stop ? 0 : DOTF_TOPOFF);
+-	set_dot(DOT_INV, 660, doty(DOT_BOT) + 27, 0);
+-	set_dot(DOT_CON, 20, doty(DOT_BOT) + 27, 0);
++	set_dot(DOT_WEA, gx + 180, 20, !stop ? 0 : DOTF_TOPOFF);
++	set_dot(DOT_INV, gx + 660, doty(DOT_BOT) + 27, 0);
++	set_dot(DOT_CON, gx + 20, doty(DOT_BOT) + 27, 0);
+ 
+ 	// inventory top left and bottom right
+-	set_dot(DOT_IN1, 645, doty(DOT_BOT) + 2, 0);
+-	set_dot(DOT_IN2, 795, doty(DOT_BO2) - 2, 0);
++	set_dot(DOT_IN1, gx + 645, doty(DOT_BOT) + 2, 0);
++	set_dot(DOT_IN2, gx + 795, doty(DOT_BO2) - 2, 0);
+ 	if (!sbot) {
+ 		__invdy = 4;
+ 	} else {
+@@ -114,8 +117,8 @@
+ 	}
+ 
+ 	// scroll bars
+-	set_dot(DOT_SCL, 160 + 5, 0, 0);
+-	set_dot(DOT_SCR, XRES - 160 - 5, 0, 0);
++	set_dot(DOT_SCL, gx + 160 + 5, 0, 0);
++	set_dot(DOT_SCR, gx + XRES0 - 160 - 5, 0, 0);
+ 	set_dot(DOT_SCU, 0, doty(DOT_BOT) + 15, 0);
+ 	if (!sbot) {
+ 		set_dot(DOT_SCD, 0, doty(DOT_BOT) + 160, 0);
+@@ -131,18 +134,18 @@
+ 	}
+ 
+ 	// chat text
+-	set_dot(DOT_TXT, 230, doty(DOT_BOT) + 8, 0);
++	set_dot(DOT_TXT, gx + 230, doty(DOT_BOT) + 8, 0);
+ 	if (!sbot) {
+-		set_dot(DOT_TX2, 624, doty(DOT_BOT) + 158, 0);
++		set_dot(DOT_TX2, gx + 624, doty(DOT_BOT) + 158, 0);
+ 		__textdisplay_sy = 150;
+ 	} else {
+-		set_dot(DOT_TX2, 624, doty(DOT_BOT) + 118, 0);
++		set_dot(DOT_TX2, gx + 624, doty(DOT_BOT) + 118, 0);
+ 		__textdisplay_sy = 110;
+ 	}
+ 
+ 	// skill list
+-	set_dot(DOT_SKL, 8, doty(DOT_BOT) + 12, 0);
+-	set_dot(DOT_SK2, 156, doty(DOT_BO2) - 2, 0);
++	set_dot(DOT_SKL, gx + 8, doty(DOT_BOT) + 12, 0);
++	set_dot(DOT_SK2, gx + 156, doty(DOT_BO2) - 2, 0);
+ 	if (!sbot) {
+ 		__skldy = 16;
+ 	} else {
+@@ -150,17 +153,17 @@
+ 	}
+ 
+ 	// gold
+-	set_dot(DOT_GLD, 195, doty(DOT_BO2) - 22, 0);
++	set_dot(DOT_GLD, gx + 195, doty(DOT_BO2) - 22, 0);
+ 
+ 	// trashcan
+-	set_dot(DOT_JNK, 610, doty(DOT_BO2) - 22, 0);
++	set_dot(DOT_JNK, gx + 610, doty(DOT_BO2) - 22, 0);
+ 
+ 	// speed options: stealth/normal/fast
+-	set_dot(DOT_MOD, 181, doty(DOT_BOT) + 24, 0);
++	set_dot(DOT_MOD, gx + 181, doty(DOT_BOT) + 24, 0);
+ 
+ 	// map top left, bottom right, center
+ 	set_dot(DOT_MTL, 0, 40, !stop ? 0 : DOTF_TOPOFF);
+-	set_dot(DOT_MBR, XRES, min(doty(DOT_MTL) + 450 - (!stop ? 0 : 40), doty(DOT_BOT) + 4), 0);
++	set_dot(DOT_MBR, XRES, doty(DOT_BOT) + 4, 0);
+ 	x = dotx(DOT_MBR) - dotx(DOT_MTL);
+ 	y = doty(DOT_MBR) - doty(DOT_MTL) + (!stop ? 0 : 40);
+ 	xc = x / 2;
+@@ -183,10 +186,10 @@
+ 	set_dot(DOT_TEL, (XRES - 520) / 2, (doty(DOT_MBR) - doty(DOT_MTL) - 320 - (!stop ? 0 : 40)) / 2 + doty(DOT_MTL), 0);
+ 
+ 	// look at window
+-	set_dot(DOT_LOK, 150, 50, 0);
++	set_dot(DOT_LOK, gx + 150, 50, 0);
+ 
+ 	// color picker window
+-	set_dot(DOT_COL, 340, 210, 0);
++	set_dot(DOT_COL, gx + 340, 210, 0);
+ 
+ 	// action bar
+ 	set_dot(DOT_ACT, XRES - MAXACTIONSLOT * 40 - (XRES - MAXACTIONSLOT * 40) / 2, doty(DOT_BOT) - 12, 0);
+diff -ru orig/src/gui/gui.h work/src/gui/gui.h
+--- orig/src/gui/gui.h	2026-10-12 02:13:26.851958606 +0000
++++ work/src/gui/gui.h	2026-10-12 02:15:08.352546118 +0000
+@@ -49,6 +49,8 @@
+ void set_v35_actions(void);
+ void mtos(unsigned int mapx, unsigned int mapy, int *scrx, int *scry);
+ int stom(int scrx, int scry, int *mapx, int *mapy);
++int gui_point_in_map(int x, int y);
++void gui_layout_changed(void);
+ void set_mapoff(int cx, int cy, int mdx, int mdy);
+ void set_mapadd(int addx, int addy);
+ void update_user_keys(void);
+diff -ru orig/src/gui/gui_buttons.c work/src/gui/gui_buttons.c
+--- orig/src/gui/gui_buttons.c	2026-10-12 02:13:26.851695268 +0000
++++ work/src/gui/gui_buttons.c	2026-10-12 02:15:08.356340096 +0000
+@@ -467,8 +467,7 @@
+ 	}
+ 
+ 	// hit map
+-	if (!hitsel[0] && butsel == -1 && mousex >= dotx(DOT_MTL) && mousey >= doty(DOT_MTL) && doty(DOT_MBR) &&
+-	    mousey < doty(DOT_MBR)) {
++	if (!hitsel[0] && butsel == -1 && gui_point_in_map(mousex, mousey)) {
+ 		if (action_ovr == ACTION_LOOK) {
+ 			map_index_t tmp = get_near_ex(mousex, mousey, CMF_USE | CMF_TAKE | NEAR_ITEM | NEAR_CHAR, 5);
+ 			if (tmp != MAXMN) {
+diff -ru orig/src/gui/gui_core.c work/src/gui/gui_core.c
+--- orig/src/gui/gui_core.c	2026-10-12 02:13:26.851724865 +0000
++++ work/src/gui/gui_core.c	2026-10-12 02:15:43.626359712 +0000
+@@ -274,10 +274,13 @@
+ 	shieldcolor = IRGB(31, 15, 5);
+ }
+ 
++static int layout_ready = 0;
++
+ int main_init(void)
+ {
+ 	init_colors();
+ 	init_dots();
++	layout_ready = 1;
+ 
+ 	set_invoff(0, 0);
+ 	set_skloff(0, 0);
+@@ -290,6 +293,20 @@
+ 	return 0;
+ }
+ 
++// The game area changed size (window resized): lay out the GUI again and rebuild the
++// map's screen positions around the new map center.
++void gui_layout_changed(void)
++{
++	if (!layout_ready) {
++		return;
++	}
++	init_dots();
++	exit_game();
++	init_game(dotx(DOT_MCT), doty(DOT_MCT));
++	minimap_layout();
++	note("Game area now %dx%d", XRES, YRES);
++}
++
+ void main_exit(void)
+ {
+ 	xfree(skltab);
+diff -ru orig/src/gui/gui_display.c work/src/gui/gui_display.c
+--- orig/src/gui/gui_display.c	2026-10-12 02:13:26.851753992 +0000
++++ work/src/gui/gui_display.c	2026-10-12 02:15:08.357106073 +0000
+@@ -295,12 +295,18 @@
+ 		goto display_graphs; // I know, I know. goto considered harmful and all that.
+ 	}
+ 
++	// The map fills the whole game area; the top bar and bottom window are drawn over it.
++	// Inside the 800 pixel GUI column the map stops at the bars as it always did.
+ 	render_push_clip();
+-	render_more_clip(dotx(DOT_MTL), doty(DOT_MTL), dotx(DOT_MBR), doty(DOT_MBR));
++	render_more_clip(0, 0, XRES, YRES);
+ 	smoothcam_begin();
+ 	display_game();
+ 	smoothcam_end();
+ 	render_pop_clip();
++	if (doty(DOT_MTL) > 0) {
++		render_rect(gui_dx, 0, gui_dx + XRES0, doty(DOT_MTL), blackcolor);
++	}
++	render_rect(gui_dx, doty(DOT_MBR), gui_dx + XRES0, YRES, blackcolor);
+ 
+ 	display_screen();
+ 
+diff -ru orig/src/gui/gui_map.c work/src/gui/gui_map.c
+--- orig/src/gui/gui_map.c	2026-10-12 02:13:26.851914314 +0000
++++ work/src/gui/gui_map.c	2026-10-12 02:15:08.355630296 +0000
+@@ -35,9 +35,23 @@
+ 	*scry = (mapoffy + mapaddy) + ((int)mapx + (int)mapy) * (FDY / 2);
+ }
+ 
++// Is this screen position on the map? That is the map area between the top bar and the
++// bottom window, plus the strips left and right of them when the game area is wider than
++// the 800 pixel GUI.
++int gui_point_in_map(int x, int y)
++{
++	if (x < 0 || y < 0 || x >= XRES || y >= YRES) {
++		return 0;
++	}
++	if (x >= dotx(DOT_MTL) && x < dotx(DOT_MBR) && y >= doty(DOT_MTL) && y < doty(DOT_MBR)) {
++		return 1;
++	}
++	return x < gui_dx || x >= gui_dx + XRES0;
++}
++
+ int stom(int scrx, int scry, int *mapx, int *mapy)
+ {
+-	if (scrx < dotx(DOT_MTL) || scrx >= dotx(DOT_MBR) || scry < doty(DOT_MTL) || scry >= doty(DOT_MBR)) {
++	if (!gui_point_in_map(scrx, scry)) {
+ 		return 0;
+ 	}
+ 
+diff -ru orig/src/gui/gui_private.h work/src/gui/gui_private.h
+--- orig/src/gui/gui_private.h	2026-10-12 02:13:26.851934069 +0000
++++ work/src/gui/gui_private.h	2026-10-12 02:15:43.610947072 +0000
+@@ -543,6 +543,7 @@
+ void context_action_enable(int onoff);
+ 
+ void minimap_init(void);
++void minimap_layout(void);
+ void minimap_toggle(void);
+ void minimap_hide(void);
+ void display_minimap(void);
+diff -ru orig/src/gui/minimap.c work/src/gui/minimap.c
+--- orig/src/gui/minimap.c	2026-10-12 02:13:26.851978765 +0000
++++ work/src/gui/minimap.c	2026-10-12 02:15:36.983346529 +0000
+@@ -51,17 +51,23 @@
+ 
+ SDL_Texture *maptex1 = NULL, *maptex2 = NULL;
+ 
+-void minimap_init(void)
++// Position the map windows at the top right of the map area
++void minimap_layout(void)
+ {
+-	if (game_options & GO_NOMAP) {
+-		return;
+-	}
+-
+ 	sx = dotx(DOT_MBR) - MAXMAP - 6;
+ 	sy = doty(DOT_MTL) + 6;
+ 
+ 	mx = dotx(DOT_MBR) - MINIMAP * 2 - 6;
+ 	my = doty(DOT_MTL) + 6;
++}
++
++void minimap_init(void)
++{
++	if (game_options & GO_NOMAP) {
++		return;
++	}
++
++	minimap_layout();
+ 
+ 	memset(_mmap, 0, sizeof(_mmap));
+ 	visible = 1;
+diff -ru orig/src/sdl/sdl.h work/src/sdl/sdl.h
+--- orig/src/sdl/sdl.h	2026-10-12 02:13:26.851129050 +0000
++++ work/src/sdl/sdl.h	2026-10-12 02:14:28.889124278 +0000
+@@ -61,6 +61,7 @@
+ void sdl_get_display_size(int *w, int *h);
+ void sdl_get_mode_size(int *w, int *h);
+ int sdl_scale_for_size(int width, int height);
++int sdl_set_game_size(int w, int h);
+ int sdl_best_scale(void);
+ 
+ void sdl_set_cursor(int cursor);
+diff -ru orig/src/sdl/sdl_core.c work/src/sdl/sdl_core.c
+--- orig/src/sdl/sdl_core.c	2026-10-12 02:13:26.850749124 +0000
++++ work/src/sdl/sdl_core.c	2026-10-12 02:13:58.117921268 +0000
+@@ -51,7 +51,9 @@
+ DLL_EXPORT int sdl_frames = 0;
+ DLL_EXPORT int sdl_multi = 4;
+ DLL_EXPORT int sdl_cache_size = 8000;
++DLL_EXPORT int __xres = XRES0;
+ DLL_EXPORT int __yres = YRES0;
++DLL_EXPORT int gui_dx = 0;
+ 
+ // Display mode (DISPMODE_*). -1 means "decide from -w/-h/-o" as older clients did.
+ int sdl_display_mode = -1;
+@@ -311,63 +313,12 @@
+ 	}
+ #endif
+ 
+-	// decide on screen format
+-	if (width != XRES || height != YRES) {
+-		int tmp_scale = 1, off = 0;
++	// decide on screen format: the largest graphics scale whose 800x450 minimum fits, then a
++	// game area as large as the screen at that scale (up to XRESMAX x YRESMAX). The GUI keeps
++	// its size and the map shows more of the world.
++	sdl_scale = sdl_scale_for_size(width, height);
++	sdl_set_game_size(width / sdl_scale, height / sdl_scale);
+ 
+-		// Check 4:3 aspect ratio (YRES0=600)
+-		if (width / XRES >= 4 && height / YRES0 >= 4) {
+-			sdl_scale = 4;
+-		} else if (width / XRES >= 3 && height / YRES0 >= 3) {
+-			sdl_scale = 3;
+-		} else if (width / XRES >= 2 && height / YRES0 >= 2) {
+-			sdl_scale = 2;
+-		}
+-
+-		// Check 16:10 aspect ratio (YRES2=500)
+-		if (width / XRES >= 4 && height / YRES2 >= 4) {
+-			tmp_scale = 4;
+-		} else if (width / XRES >= 3 && height / YRES2 >= 3) {
+-			tmp_scale = 3;
+-		} else if (width / XRES >= 2 && height / YRES2 >= 2) {
+-			tmp_scale = 2;
+-		}
+-
+-		if (tmp_scale > sdl_scale || height < YRES0) {
+-			sdl_scale = tmp_scale;
+-			YRES = height / sdl_scale;
+-		}
+-
+-		// Check 16:9 widescreen aspect ratio (YRES3=450) - most permissive
+-		tmp_scale = 1;
+-		if (width / XRES >= 4 && height / YRES3 >= 4) {
+-			tmp_scale = 4;
+-		} else if (width / XRES >= 3 && height / YRES3 >= 3) {
+-			tmp_scale = 3;
+-		} else if (width / XRES >= 2 && height / YRES3 >= 2) {
+-			tmp_scale = 2;
+-		}
+-
+-		if (tmp_scale > sdl_scale) {
+-			sdl_scale = tmp_scale;
+-			YRES = height / sdl_scale;
+-		}
+-
+-		YRES = height / sdl_scale;
+-
+-		if (game_options & GO_SMALLTOP) {
+-			off += 40;
+-		}
+-		if (game_options & GO_SMALLBOT) {
+-			off += 40;
+-		}
+-
+-		if (YRES > YRES1 - off) {
+-			YRES = YRES1 - off;
+-		}
+-
+-		render_set_offset((width / sdl_scale - XRES) / 2, (height / sdl_scale - YRES) / 2);
+-	}
+ 	if (game_options & GO_NOTSET) {
+ 		if (YRES >= 620) {
+ 			game_options = GO_DEFAULTS;
+@@ -809,7 +760,7 @@
+ 	int scale;
+ 
+ 	for (scale = 4; scale > 1; scale--) {
+-		if (width / XRES >= scale && height / YRES3 >= scale) {
++		if (width / XRES0 >= scale && height / YRESMIN >= scale) {
+ 			break;
+ 		}
+ 	}
+@@ -827,25 +778,56 @@
+ 	return sdl_scale_for_size(w, h);
+ }
+ 
+-// Map the game's picture onto the window. If the window fits the game area at the
+-// current scale and would not get a larger scale, draw pixel for pixel and center the
+-// game as sdl_init() does. Otherwise scale the game area to fit the window.
++// Set the size of the game area (XRES x YRES), clamped to what the GUI needs and what the
++// server sends. Returns 1 if it changed.
++int sdl_set_game_size(int w, int h)
++{
++	int ox = XRES, oy = YRES;
++
++	XRES = w < XRES0 ? XRES0 : (w > XRESMAX ? XRESMAX : w);
++	YRES = h < YRESMIN ? YRESMIN : (h > YRESMAX ? YRESMAX : h);
++	gui_dx = (XRES - XRES0) / 2;
++
++	return XRES != ox || YRES != oy;
++}
++
++// Map the game's picture onto the window. The game area grows with the window so it is
++// drawn pixel for pixel without borders. Only when the window is smaller than the GUI
++// needs, or larger than the server's view range, is the picture scaled to fit.
+ static void sdl_update_presentation(void)
+ {
+-	int w = 0, h = 0, gw, gh;
++	int w = 0, h = 0, gw, gh, nx, ny, changed;
+ 	SDL_Texture *target;
+ 
+ 	if (!sdlren || !SDL_GetRenderOutputSize(sdlren, &w, &h) || w <= 0 || h <= 0) {
+ 		return;
+ 	}
+ 
++	nx = w / sdl_scale;
++	ny = h / sdl_scale;
++
++	if (nx >= XRES0 && ny >= YRESMIN && nx <= XRESMAX && ny <= YRESMAX) {
++		changed = sdl_set_game_size(nx, ny);
++	} else {
++		// keep the window's shape: grow (small window) or shrink (huge window) the
++		// game area until it is inside the limits, then scale the picture
++		double k = 1.0;
++		if (nx < XRES0 || ny < YRESMIN) {
++			k = (double)XRES0 / nx > (double)YRESMIN / ny ? (double)XRES0 / nx : (double)YRESMIN / ny;
++		} else {
++			k = (double)XRESMAX / nx < (double)YRESMAX / ny ? (double)XRESMAX / nx : (double)YRESMAX / ny;
++		}
++		changed = sdl_set_game_size((int)(nx * k + 0.5), (int)(ny * k + 0.5));
++	}
++
+ 	gw = XRES * sdl_scale;
+ 	gh = YRES * sdl_scale;
+ 
+ 	target = SDL_GetRenderTarget(sdlren);
+ 	SDL_SetRenderTarget(sdlren, NULL);
+ 
+-	if (w >= gw && h >= gh && sdl_scale_for_size(w, h) <= sdl_scale) {
++	if (w >= gw && h >= gh && w - gw < sdl_scale * 2 && h - gh < sdl_scale * 2) {
++		// pixel for pixel; the leftover is less than one game pixel
+ 		SDL_SetRenderLogicalPresentation(sdlren, w, h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+ 		render_set_offset((w / sdl_scale - XRES) / 2, (h / sdl_scale - YRES) / 2);
+ 	} else {
+@@ -854,6 +836,10 @@
+ 	}
+ 
+ 	SDL_SetRenderTarget(sdlren, target);
++
++	if (changed) {
++		gui_layout_changed();
++	}
+ }
+ 
+ static SDL_DisplayID sdl_window_display(void)

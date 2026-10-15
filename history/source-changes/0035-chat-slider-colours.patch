@@ -1,0 +1,323 @@
+diff --git a/src/client/client.c b/src/client/client.c
+index 92e7a43..0efdd60 100644
+--- a/src/client/client.c
++++ b/src/client/client.c
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+ 
+-#define CLIENT_PROTOCOL_VERSION 7 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid
++#define CLIENT_PROTOCOL_VERSION 8 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech
+ 
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+diff --git a/src/game/game.h b/src/game/game.h
+index 827d804..928a385 100644
+--- a/src/game/game.h
++++ b/src/game/game.h
+@@ -223,6 +223,8 @@ void render_text_linedown(void);
+ int render_text_scrolled_up(void);
+ int render_text_unseen(void);
+ void render_text_bottom(void);
++void render_text_scroll_info(int *avail, int *visible, int *pos);
++void render_text_scroll_to(int pos);
+ int render_scantext(int x, int y, char *hit);
+ void render_list_text(void);
+ 
+diff --git a/src/game/render.c b/src/game/render.c
+index d0696b5..52f4c7a 100644
+--- a/src/game/render.c
++++ b/src/game/render.c
+@@ -1551,6 +1551,9 @@ void render_init_text(void)
+ 	palette[16] = IRGB(24, 16, 31); // chat	- internal clan
+ 
+ 	palette[17] = IRGB(31, 31, 31); // fake white text (hidden links)
++
++	palette[19] = IRGB(12, 26, 31); // player names (hidden links in chat)
++	palette[20] = IRGB(31, 30, 20); // light yellow (what NPCs say)
+ }
+ 
+ void render_set_textfont(int nr)
+@@ -1639,7 +1642,7 @@ void render_display_text(void)
+  */
+ void render_add_text(char *ptr)
+ {
+-	int n, m, pos, color = 0, link = 0;
++	int n, m, pos, color = 0, link = 0, name_color = -1;
+ 	int x = 0, tmp;
+ 	char buf[256];
+ 
+@@ -1655,9 +1658,19 @@ void render_add_text(char *ptr)
+ 			switch (*ptr) {
+ 			case 'c':
+ 				tmp = atoi(ptr + 1);
++				if (tmp == 17 && color != 3 && color != 8) {
++					// player names are hidden links: show them in their own colour
++					// (staff and gods keep the colour the server gave them)
++					name_color = color;
++					color = 19;
++				} else if (tmp == 18 && name_color != -1) {
++					color = name_color;
++					name_color = -1;
++				}
+ 				if (tmp == 18) {
+ 					link = 0;
+ 				} else if (tmp != 17) {
++					name_color = -1;
+ 					color = tmp;
+ 					link = 0;
+ 				}
+@@ -1889,6 +1902,36 @@ int render_text_unseen(void)
+ 	return text_unseen;
+ }
+ 
++// for the chat slider: lines kept, lines shown, first shown line (0 = oldest kept)
++void render_text_scroll_info(int *avail, int *visible, int *pos)
++{
++	int oldest = textlines >= MAXTEXTLINES ? textnextline : 0;
++
++	*avail = textlines >= MAXTEXTLINES ? MAXTEXTLINES : textlines;
++	*visible = TEXTDISPLAYLINES;
++	*pos = (textdisplayline - oldest + MAXTEXTLINES) % MAXTEXTLINES;
++}
++
++void render_text_scroll_to(int pos)
++{
++	int avail, visible, cur, oldest = textlines >= MAXTEXTLINES ? textnextline : 0;
++
++	render_text_scroll_info(&avail, &visible, &cur);
++	if (avail <= visible) {
++		return;
++	}
++	if (pos > avail - visible) {
++		pos = avail - visible;
++	}
++	if (pos < 0) {
++		pos = 0;
++	}
++	textdisplayline = (oldest + pos) % MAXTEXTLINES;
++	if (!render_text_scrolled_up()) {
++		text_unseen = 0;
++	}
++}
++
+ // jump straight to the newest line
+ void render_text_bottom(void)
+ {
+diff --git a/src/gui/craftwin.c b/src/gui/craftwin.c
+index d4b5175..05f1473 100644
+--- a/src/gui/craftwin.c
++++ b/src/gui/craftwin.c
+@@ -527,7 +527,9 @@ static void cw_display_grid(int px, int py, int hov)
+ 
+ 		cw_icon(rc->sprite, cx, y + 17, !ok);
+ 
+-		render_text(cx, y + 34, lowlvl ? low_col : (ok ? whitecolor : lightgraycolor), RENDER_ALIGN_CENTER,
++		// long names ("Two-Handed Sword") use the small font to stay inside the box
++		render_text(cx, y + 34, lowlvl ? low_col : (ok ? whitecolor : lightgraycolor),
++		    RENDER_ALIGN_CENTER | (render_text_len(0, cw_short_name(rc), -1) > CW_CELL_W - 10 ? RENDER_TEXT_SMALL : 0),
+ 		    cw_short_name(rc));
+ 		if (cw_station == 2 && rc->mat != -1) {
+ 			render_text_fmt(cx, y + 44, rc->canmake ? ok_col : no_col, RENDER_ALIGN_CENTER, "%d bar%s", rc->matcnt,
+diff --git a/src/gui/display.c b/src/gui/display.c
+index 6a358a3..50597e2 100644
+--- a/src/gui/display.c
++++ b/src/gui/display.c
+@@ -17,6 +17,7 @@
+ #include "game/game.h"
+ #include "client/client.h"
+ #include "modder/modder.h"
++#include "sdl/sdl.h"
+ 
+ char tutor_text[1024] = {""};
+ int show_tutor = 0;
+@@ -875,11 +876,103 @@ static void display_chat_latest(void)
+ 	render_text(sx + 15, sy + 2, hov ? whitecolor : col, 0, chat_latest_label(buf, sizeof(buf)));
+ }
+ 
++// chat slider, right of the chat text. Returns 0 when everything fits (no thumb).
++static int chat_slider_geom(int *sx, int *sy, int *ex, int *ey, int *ty, int *th)
++{
++	int avail, visible, pos, h;
++
++	*ex = dotx(DOT_TX2) - 2;
++	*sx = *ex - 6;
++	*sy = doty(DOT_TXT);
++	*ey = doty(DOT_TXT) + __textdisplay_sy - 2;
++	h = *ey - *sy;
++
++	render_text_scroll_info(&avail, &visible, &pos);
++	if (avail <= visible || h < 12) {
++		*ty = *sy;
++		*th = h;
++		return 0;
++	}
++	*th = h * visible / avail;
++	if (*th < 10) {
++		*th = 10;
++	}
++	*ty = *sy + (h - *th) * pos / (avail - visible);
++	return 1;
++}
++
++static int chat_slider_drag = 0, chat_slider_grab;
++
++static void chat_slider_set(int my)
++{
++	int sx, sy, ex, ey, ty, th, avail, visible, pos;
++
++	if (!chat_slider_geom(&sx, &sy, &ex, &ey, &ty, &th) || ey - sy <= th) {
++		return;
++	}
++	render_text_scroll_info(&avail, &visible, &pos);
++	pos = ((my - chat_slider_grab - sy) * (avail - visible) + (ey - sy - th) / 2) / (ey - sy - th);
++	render_text_scroll_to(pos);
++}
++
++// Click and drag the chat slider; click above or below the thumb to jump there.
++// Returns 1 when it took the mouse event.
++int chat_slider_mouse(int what)
++{
++	int mx = pnl_lx(PNL_CHAT, mousex), my = pnl_ly(PNL_CHAT, mousey);
++	int sx, sy, ex, ey, ty, th;
++
++	switch (what) {
++	case SDL_MOUM_NONE:
++		if (chat_slider_drag) {
++			chat_slider_set(my);
++			return 1;
++		}
++		return 0;
++	case SDL_MOUM_LDOWN:
++		if (pnl_at(mousex, mousey) != PNL_CHAT) {
++			return 0;
++		}
++		if (!chat_slider_geom(&sx, &sy, &ex, &ey, &ty, &th)) {
++			return 0;
++		}
++		if (mx < sx - 2 || mx > ex + 2 || my < sy || my > ey) {
++			return 0;
++		}
++		chat_slider_grab = (my >= ty && my <= ty + th) ? my - ty : th / 2;
++		chat_slider_drag = 1;
++		chat_slider_set(my);
++		return 1;
++	case SDL_MOUM_LUP:
++		if (chat_slider_drag) {
++			chat_slider_drag = 0;
++			return 1;
++		}
++		return 0;
++	}
++	return 0;
++}
++
++static void display_chat_slider(void)
++{
++	int sx, sy, ex, ey, ty, th, hov, mx = pnl_mx(PNL_CHAT), my = pnl_my(PNL_CHAT);
++
++	if (!chat_slider_geom(&sx, &sy, &ex, &ey, &ty, &th)) {
++		gui_draw_box(sx, sy, ex, ey, IRGB(4, 3, 2), IRGB(10, 8, 5));
++		return;
++	}
++	hov = chat_slider_drag || (mx >= sx - 2 && mx <= ex + 2 && my >= ty && my <= ty + th);
++
++	gui_draw_box(sx, sy, ex, ey, IRGB(4, 3, 2), IRGB(12, 10, 6));
++	gui_draw_box(sx + 1, ty, ex - 1, ty + th, hov ? IRGB(26, 20, 10) : IRGB(18, 14, 8), IRGB(8, 6, 3));
++}
++
+ void display_text(void)
+ {
+ 	int link;
+ 
+ 	render_display_text();
++	display_chat_slider();
+ 	display_chat_latest();
+ 
+ 	if ((link = render_scantext(pnl_mx(PNL_CHAT), pnl_my(PNL_CHAT), hitsel))) {
+diff --git a/src/gui/dots.c b/src/gui/dots.c
+index f76e9bd..c15dd17 100644
+--- a/src/gui/dots.c
++++ b/src/gui/dots.c
+@@ -208,7 +208,7 @@ void init_dots(void)
+ 	set_dot(DOT_TXT, 230, doty(DOT_BOT) + 8, 0);
+ 	set_dot(DOT_TX2, 221 + ccw, cch - 12, 0);
+ 	__textdisplay_sy = cch - 23; // keep clear of the boxed input line below
+-	__textdisplay_sx = ccw - 7;
++	__textdisplay_sx = ccw - 17; // slider on the right
+ 
+ 	// skill list, 10 pixels per line; a container shown instead uses 40 pixel rows
+ 	set_dot(DOT_SKL, 8, doty(DOT_BOT) + 12, 0);
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index 7ded94a..16bae0c 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -352,6 +352,12 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		return;
+ 	}
+ 
++	// the chat slider
++	if ((what == SDL_MOUM_LDOWN || what == SDL_MOUM_LUP) && chat_slider_mouse(what)) {
++		vk_lbut = what == SDL_MOUM_LDOWN;
++		return;
++	}
++
+ 	switch (what) {
+ 	case SDL_MOUM_NONE:
+ 		mousex = local_x;
+@@ -382,6 +388,10 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 		questwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 		craftwin_mouse(SDL_MOUM_NONE, mousex, mousey, 0);
+ 
++		if (chat_slider_mouse(SDL_MOUM_NONE)) {
++			break;
++		}
++
+ 		if (butsel != -1 && vk_lbut && (but[butsel].flags & BUTF_MOVEEXEC)) {
+ 			exec_cmd(lcmd, 0);
+ 		}
+diff --git a/src/gui/gui_private.h b/src/gui/gui_private.h
+index 4f0faa1..642a773 100644
+--- a/src/gui/gui_private.h
++++ b/src/gui/gui_private.h
+@@ -501,6 +501,7 @@ int do_display_questlog(int nr);
+ void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border);
+ void gui_draw_box_outline(int sx, int sy, int ex, int ey, unsigned short border);
+ int chat_latest_hit(int mx, int my);
++int chat_slider_mouse(int what);
+ int cmd_box_hit(int x, int y);
+ void gui_draw_panel(int x, int y, int w, int h, int title_h);
+ 
+diff --git a/src/gui/options.c b/src/gui/options.c
+index 2966c7e..cbf1877 100644
+--- a/src/gui/options.c
++++ b/src/gui/options.c
+@@ -796,21 +796,20 @@ int options_mouse(int what, int x, int y, int delta)
+ 	}
+ }
+ 
++// The border is drawn as 1 pixel rectangles: scaled lines can lose an edge at some
++// interface and panel sizes.
+ void gui_draw_box_outline(int sx, int sy, int ex, int ey, unsigned short border)
+ {
+-	render_line(sx, sy, ex, sy, border);
+-	render_line(sx, ey, ex, ey, border);
+-	render_line(sx, sy, sx, ey, border);
+-	render_line(ex, sy, ex, ey + 1, border);
++	render_rect(sx, sy, ex + 1, sy + 1, border);
++	render_rect(sx, ey, ex + 1, ey + 1, border);
++	render_rect(sx, sy, sx + 1, ey + 1, border);
++	render_rect(ex, sy, ex + 1, ey + 1, border);
+ }
+ 
+ void gui_draw_box(int sx, int sy, int ex, int ey, unsigned short fill, unsigned short border)
+ {
+ 	render_rect(sx, sy, ex, ey, fill);
+-	render_line(sx, sy, ex, sy, border);
+-	render_line(sx, ey, ex, ey, border);
+-	render_line(sx, sy, sx, ey, border);
+-	render_line(ex, sy, ex, ey + 1, border);
++	gui_draw_box_outline(sx, sy, ex, ey, border);
+ }
+ 
+ static void draw_slider(int row, int value, int hover, const char *label)

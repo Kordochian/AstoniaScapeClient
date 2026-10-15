@@ -1,0 +1,491 @@
+diff --git a/src/amod/amod_structs.h b/src/amod/amod_structs.h
+index 2650d8b..0fc9630 100644
+--- a/src/amod/amod_structs.h
++++ b/src/amod/amod_structs.h
+@@ -276,6 +276,7 @@ struct skltab {
+ 	int curr;
+ 	int raisecost;
+ 	int barsize; // positive is blue, negative is red
++	int skill_id; // use-based skills: index into cskill[], -1 = none (old point-buy display)
+ };
+ 
+ typedef struct skltab SKLTAB;
+diff --git a/src/client/client.c b/src/client/client.c
+index 30ab8f8..7da559b 100644
+--- a/src/client/client.c
++++ b/src/client/client.c
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+ 
+-#define CLIENT_PROTOCOL_VERSION 4 // 4: server sends DIST 64
++#define CLIENT_PROTOCOL_VERSION 5 // 4: server sends DIST 64, 5: skill list + skill XP
+ 
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+@@ -91,6 +91,8 @@ DLL_EXPORT stat_t endurance;
+ DLL_EXPORT stat_t lifeshield;
+ DLL_EXPORT uint32_t experience;
+ DLL_EXPORT uint32_t experience_used;
++DLL_EXPORT struct cskill cskill[MAXCSKILL];
++DLL_EXPORT int cskill_active = 0;
+ DLL_EXPORT uint32_t mil_exp;
+ DLL_EXPORT uint32_t gold;
+ 
+@@ -179,6 +181,8 @@ void bzero_client(int part)
+ 		lifeshield = 0;
+ 		experience = 0;
+ 		experience_used = 0;
++		bzero(cskill, sizeof(cskill));
++		cskill_active = 0;
+ 		mil_exp = 0;
+ 		gold = 0;
+ 
+diff --git a/src/client/client.h b/src/client/client.h
+index 9d9d403..468ce31 100644
+--- a/src/client/client.h
++++ b/src/client/client.h
+@@ -480,6 +480,24 @@ DLL_EXPORT extern stat_t endurance;
+ DLL_EXPORT extern stat_t lifeshield;
+ DLL_EXPORT extern uint32_t experience;
+ DLL_EXPORT extern uint32_t experience_used;
++
++// use-based skills (protocol 5): the server sends its skill list and each skill's XP
++#define MAXCSKILL 128
++#define CSKILL_GROUPS 7 // power, attribute, combat, magic, gathering, production, support
++struct cskill {
++	int used; // defined by the server
++	int group; // 0..CSKILL_GROUPS-1
++	int value; // V_* slot the level is mirrored into, -1 = none
++	int max; // highest level
++	char name[40];
++	char desc[160];
++	int level; // 0 = player does not have it
++	uint32_t xp; // total XP
++	uint32_t xp_level; // total XP needed for the current level
++	uint32_t xp_next; // total XP needed for the next level, 0 = at max
++};
++DLL_EXPORT extern struct cskill cskill[MAXCSKILL];
++DLL_EXPORT extern int cskill_active; // server sent a skill list: skills level by use, no raising
+ DLL_EXPORT extern uint32_t gold;
+ DLL_EXPORT extern tick_t tick;
+ extern int lasttick; // ticks in inbuf
+diff --git a/src/client/client_private.h b/src/client/client_private.h
+index 9370302..00e83a1 100644
+--- a/src/client/client_private.h
++++ b/src/client/client_private.h
+@@ -55,8 +55,8 @@
+ #define SV_MIL_EXP          51
+ #define SV_QUESTLOG         52
+ #define SV_PROTOCOL         53
+-#define SV_RESERVED1        54
+-#define SV_RESERVED2        55
++#define SV_SKILLDEF         54 // protocol 5: skill list (server skillreg.c)
++#define SV_SKILLXP          55 // protocol 5: level and XP of one skill
+ #define SV_RESERVED3        56
+ #define SV_RESERVED4        57
+ #define SV_MOD1             58
+diff --git a/src/client/protocol.c b/src/client/protocol.c
+index 8b32f9a..485b1b0 100644
+--- a/src/client/protocol.c
++++ b/src/client/protocol.c
+@@ -874,6 +874,48 @@ static void sv_exp_used(unsigned char *buf)
+ 	update_skltab = 1;
+ }
+ 
++// length of an SV_SKILLDEF message: 6 + name + 1 + description
++static size_t svl_skilldef(unsigned char *buf)
++{
++	return 7u + buf[5] + buf[6 + buf[5]];
++}
++
++static size_t sv_skilldef(unsigned char *buf)
++{
++	int id = buf[1], nlen = buf[5], dlen = buf[6 + buf[5]];
++	struct cskill *cs;
++
++	if (id < MAXCSKILL) {
++		cs = cskill + id;
++		cs->used = 1;
++		cs->group = min(buf[2], CSKILL_GROUPS - 1);
++		cs->value = buf[3] == 255 ? -1 : buf[3];
++		cs->max = buf[4];
++		nlen = min(nlen, (int)sizeof(cs->name) - 1);
++		memcpy(cs->name, buf + 6, (size_t)nlen);
++		cs->name[nlen] = 0;
++		dlen = min(dlen, (int)sizeof(cs->desc) - 1);
++		memcpy(cs->desc, buf + 7 + buf[5], (size_t)dlen);
++		cs->desc[dlen] = 0;
++		cskill_active = 1;
++		update_skltab = 1;
++	}
++	return svl_skilldef(buf);
++}
++
++static void sv_skillxp(unsigned char *buf)
++{
++	int id = buf[1];
++
++	if (id < MAXCSKILL) {
++		cskill[id].level = buf[2];
++		cskill[id].xp = load_u32(buf + 3);
++		cskill[id].xp_level = load_u32(buf + 7);
++		cskill[id].xp_next = load_u32(buf + 11);
++		update_skltab = 1;
++	}
++}
++
+ static void sv_mil_exp(unsigned char *buf)
+ {
+ 	mil_exp = load_ulong(buf + 1);
+@@ -1272,6 +1314,13 @@ void process(unsigned char *buf, int size)
+ 			case SV_PROTOCOL:
+ 				len = 2;
+ 				break;
++			case SV_SKILLDEF:
++				len = sv_skilldef(buf);
++				break;
++			case SV_SKILLXP:
++				sv_skillxp(buf);
++				len = 15;
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_process(buf);
+@@ -1498,6 +1547,12 @@ uint32_t prefetch(unsigned char *buf, int size)
+ 				sv_protocol(buf);
+ 				len = 2;
+ 				break;
++			case SV_SKILLDEF:
++				len = svl_skilldef(buf);
++				break;
++			case SV_SKILLXP:
++				len = 15;
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_prefetch(buf);
+diff --git a/src/gui/display.c b/src/gui/display.c
+index 10ab862..d41e6d8 100644
+--- a/src/gui/display.c
++++ b/src/gui/display.c
+@@ -554,6 +554,25 @@ void display_skill(void)
+ 			continue;
+ 		}
+ 
++		if (skltab[i].v == STV_HEADER) {
++			render_text(bsx - 6, yt, lightorangecolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
++			continue;
++		}
++
++		if (skltab[i].skill_id >= 0) {
++			// use-based skill: XP progress to the next level, on a dark track
++			render_rect(bsx, bsy, bex, bsy + 1, darkgraycolor);
++			if (skltab[i].barsize > 0) {
++				render_rect(bsx, bsy, bsx + skltab[i].barsize, bsy + 1, bluecolor);
++			}
++		}
++
++		if (skltab[i].v == STV_SKILL) {
++			render_text(bsx, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
++			render_text_fmt(bex, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, "%d", skltab[i].base);
++			continue;
++		}
++
+ 		if (skltab[i].button) {
+ 			barsize = skltab[i].barsize;
+ 		} else {
+diff --git a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+index e7d68b9..a77267b 100644
+--- a/src/gui/gui_buttons.c
++++ b/src/gui/gui_buttons.c
+@@ -551,7 +551,7 @@ static void detect_hover_target(void)
+ 	}
+ 
+ 	// skill text lines for hover text
+-	if (!hitsel[0] && butsel == -1 && !con_cnt) {
++	if (!hitsel[0] && butsel == -1 && !con_cnt && pnl_at(mousex, mousey) == PNL_SKILLS) {
+ 		mx = pnl_mx(PNL_SKILLS);
+ 		my = pnl_my(PNL_SKILLS);
+ 		for (i = 0; i <= BUT_SKL_END - BUT_SKL_BEG; i++) {
+@@ -1069,7 +1069,7 @@ static int get_skl_look(int x, int y)
+ 			continue;
+ 		}
+ 		if (x > but[b].x - 5 && x < but[b].x + 70 && y > but[b].y - 5 && y < but[b].y + 5) {
+-			return skltab[i].v;
++			return skltab[i].v >= 0 ? skltab[i].v : -1; // headers and value-less skills have nothing to look at
+ 		}
+ 	}
+ 	return -1;
+diff --git a/src/gui/gui_inventory.c b/src/gui/gui_inventory.c
+index 5187ca6..b2af115 100644
+--- a/src/gui/gui_inventory.c
++++ b/src/gui/gui_inventory.c
+@@ -135,11 +135,125 @@ DLL_EXPORT int _get_skltab_show(int i)
+ 	}
+ }
+ 
++static SKLTAB *skltab_new(int *use)
++{
++	if (*use == skltab_max) {
++		skltab_max += 8;
++		skltab = xrealloc(skltab, (size_t)skltab_max * sizeof(SKLTAB), MEM_GUI);
++	}
++	bzero(&skltab[*use], sizeof(SKLTAB));
++	skltab[*use].skill_id = -1;
++
++	return &skltab[(*use)++];
++}
++
++static const char *cskill_group_name[CSKILL_GROUPS] = {
++    "Powers", "Attributes", "Combat", "Magic", "Gathering", "Production", "Support"};
++
++// bar under a skill line: XP gained in this level, out of what the level needs
++static int cskill_barsize(const struct cskill *cs)
++{
++	uint64_t done, need;
++
++	if (!cs->xp_next || cs->xp_next <= cs->xp_level) {
++		return SKLWIDTH - 10; // max level
++	}
++	need = cs->xp_next - cs->xp_level;
++	done = cs->xp > cs->xp_level ? cs->xp - cs->xp_level : 0;
++	if (done > need) {
++		done = need;
++	}
++	return (int)(done * (SKLWIDTH - 10) / need);
++}
++
++// use-based skills (protocol 5): the skill list comes from the server, grouped, with an
++// XP bar per skill and no raise buttons. Values that are not skills (weapon, armor,
++// offense...) are listed first, as before.
++static void set_skltab_skills(void)
++{
++	int use = 0, n, i, g, id, first;
++	char is_skill[V_MAX];
++	SKLTAB *st;
++
++	bzero(is_skill, sizeof(is_skill));
++	for (id = 0; id < MAXCSKILL; id++) {
++		if (cskill[id].used && cskill[id].value >= 0 && cskill[id].value < V_MAX) {
++			is_skill[cskill[id].value] = 1;
++		}
++	}
++
++	for (first = 1, n = 0; n <= V_MAX; n++) {
++		i = get_skltab_index(n);
++		if (i == -2) {
++			break;
++		}
++		if (i < 0 || i >= V_MAX || is_skill[i]) {
++			continue;
++		}
++		if (!value[0][i] && !value[1][i] && !get_skltab_show(i)) {
++			continue;
++		}
++		if (first) {
++			st = skltab_new(&use);
++			st->v = STV_HEADER;
++			strcpy(st->name, "Stats");
++			first = 0;
++		}
++		st = skltab_new(&use);
++		st->v = i;
++		strcpy(st->name, game_skill[i].name);
++		st->base = (int)value[1][i];
++		st->curr = (int)value[0][i];
++	}
++
++	for (g = 0; g < CSKILL_GROUPS; g++) {
++		for (first = 1, id = 0; id < MAXCSKILL; id++) {
++			struct cskill *cs = cskill + id;
++
++			if (!cs->used || cs->group != g || cs->level < 1) {
++				continue;
++			}
++			if (first) {
++				if (use) {
++					st = skltab_new(&use);
++					st->v = STV_EMPTYLINE;
++				}
++				st = skltab_new(&use);
++				st->v = STV_HEADER;
++				strcpy(st->name, cskill_group_name[g]);
++				first = 0;
++			}
++			st = skltab_new(&use);
++			st->skill_id = id;
++			snprintf(st->name, sizeof(st->name), "%s", cs->name);
++			if (cs->value >= 0 && cs->value < V_MAX) {
++				st->v = cs->value;
++				st->base = (int)value[1][cs->value];
++				st->curr = (int)value[0][cs->value];
++			} else {
++				st->v = STV_SKILL;
++				st->base = st->curr = cs->level;
++			}
++			st->barsize = cskill_barsize(cs);
++		}
++	}
++
++	skltab_cnt = use;
++	max_skloff = max(0, skltab_cnt - SKLDY);
++
++	set_skloff(0, skloff);
++}
++
+ void set_skltab(void)
+ {
+ 	int i, use, flag, n;
+ 	int experience_left, raisecost;
+ 
++	if (cskill_active) {
++		set_skltab_skills();
++		return;
++	}
++
+ 	// Calculate signed difference to detect negative experience
+ 	experience_left = (int)((int64_t)experience - (int64_t)experience_used);
+ 
+@@ -157,6 +271,7 @@ void set_skltab(void)
+ 
+ 			bzero(&skltab[use], sizeof(SKLTAB));
+ 			skltab[use].v = STV_EMPTYLINE;
++			skltab[use].skill_id = -1;
+ 
+ 			use++;
+ 			flag = 0;
+@@ -178,6 +293,7 @@ void set_skltab(void)
+ 			skltab[use].v = STV_JUSTAVALUE;
+ 			skltab[use].curr = (int)(-1000.0 * experience_left / max(1, experience_used));
+ 			skltab[use].button = 0;
++			skltab[use].skill_id = -1;
+ 
+ 			use++;
+ 			flag = 1;
+@@ -196,6 +312,7 @@ void set_skltab(void)
+ 			}
+ 
+ 			skltab[use].v = i;
++			skltab[use].skill_id = -1;
+ 
+ 			strcpy(skltab[use].name, game_skill[i].name);
+ 			skltab[use].base = (int)value[1][i];
+diff --git a/src/gui/gui_private.h b/src/gui/gui_private.h
+index 7d42fdb..97ae95c 100644
+--- a/src/gui/gui_private.h
++++ b/src/gui/gui_private.h
+@@ -200,6 +200,8 @@
+ 
+ #define STV_EMPTYLINE  -1
+ #define STV_JUSTAVALUE -2 // value is in curr
++#define STV_HEADER     -3 // group title, text is in name
++#define STV_SKILL      -4 // use-based skill without a value slot (Mining...), see skill_id
+ 
+ #define TGT_MAP 1
+ #define TGT_ITM 2
+@@ -240,6 +242,7 @@ struct skltab {
+ 	int curr;
+ 	int raisecost;
+ 	int barsize; // positive is blue, negative is red
++	int skill_id; // use-based skills: index into cskill[], -1 = none (old point-buy display)
+ };
+ 
+ typedef struct skltab SKLTAB;
+diff --git a/src/gui/hover.c b/src/gui/hover.c
+index 7d5d0c6..8809f07 100644
+--- a/src/gui/hover.c
++++ b/src/gui/hover.c
+@@ -659,12 +659,92 @@ static void display_hover_skill_v3(void)
+ 	}
+ }
+ 
++// use-based skills (protocol 5): description, level and XP to the next level
++static void display_hover_skill_xp(const SKLTAB *st)
++{
++	const struct cskill *cs = cskill + st->skill_id;
++	const char *desc;
++	int height = 0, width = 200, lines = 2;
++	uint32_t need = 0, done = 0;
++
++	if (cs->desc[0]) {
++		desc = cs->desc; // the server's text (skills.cfg)
++	} else if (cs->value >= 0 && cs->value < *game_v_max && game_skilldesc[cs->value]) {
++		desc = game_skilldesc[cs->value];
++	} else {
++		desc = "";
++	}
++
++	if (cs->xp_next > cs->xp_level) {
++		need = cs->xp_next - cs->xp_level;
++		done = cs->xp > cs->xp_level ? min(cs->xp - cs->xp_level, need) : 0;
++		lines += 2;
++	}
++	if (st->v >= 0 && st->curr != st->base) {
++		lines++;
++	}
++
++	if (desc[0]) {
++		height += render_text_break_length(0, 0, width - 12, 0xffff, 0, desc) + 4;
++	}
++	height += lines * 10;
++
++	int sx = mousex + 8;
++	if (sx < dotx(DOT_TL)) {
++		sx = dotx(DOT_TL);
++	}
++	if (sx > dotx(DOT_BR) - width - 8) {
++		sx = dotx(DOT_BR) - width - 8;
++	}
++
++	int sy = mousey - height / 2 - 4;
++	if (sy < doty(DOT_TL)) {
++		sy = doty(DOT_TL);
++	}
++	if (sy > doty(DOT_BR) - height - 8) {
++		sy = doty(DOT_BR) - height - 8;
++	}
++
++	render_shaded_rect(sx, sy, sx + width + 8, sy + height + 8, 0x0000, 150);
++
++	sy += 4;
++	if (desc[0]) {
++		sy = render_text_break(sx + 4, sy, sx + width - 8, 0xffff, 0, desc) + 4;
++	}
++	if (cs->xp_next > cs->xp_level) {
++		render_text_fmt(sx + 4, sy, 0xffff, 0, "%s level %d of %d", cs->name, cs->level, cs->max);
++	} else {
++		render_text_fmt(sx + 4, sy, 0xffff, 0, "%s level %d (max)", cs->name, cs->level);
++	}
++	sy += 10;
++	if (st->v >= 0 && st->curr != st->base) {
++		render_text_fmt(sx + 4, sy, 0xffff, 0, "With equipment and effects: %d", st->curr);
++		sy += 10;
++	}
++	render_text_fmt(sx + 4, sy, 0xffff, 0, "XP gained: %s", nicenumber((int)min(cs->xp, 2000000000u)));
++	sy += 10;
++	if (need) {
++		render_text_fmt(sx + 4, sy, 0xffff, 0, "Next level at %s XP", nicenumber((int)min(cs->xp_next, 2000000000u)));
++		sy += 10;
++		render_text_fmt(sx + 4, sy, 0xffff, 0, "%s XP to go (%.1f%% done)", nicenumber((int)(need - done)),
++		    100.0 * done / need);
++	}
++}
++
+ static void display_hover_skill(void)
+ {
+ 	if (capbut != -1) {
+ 		return; // dont display hover when dragging scrollthumb
+ 	}
+ 
++	if (skltab && sklsel2 != -1 && sklsel2 + skloff < skltab_cnt && skltab[sklsel2 + skloff].skill_id >= 0 &&
++	    skltab[sklsel2 + skloff].skill_id < MAXCSKILL) {
++		if (tick - last_tick > HOVER_DELAY) {
++			display_hover_skill_xp(&skltab[sklsel2 + skloff]);
++		}
++		return;
++	}
++
+ 	if (sv_ver == 35) {
+ 		display_hover_skill_v35();
+ 	} else {

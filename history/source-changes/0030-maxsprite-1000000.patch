@@ -1,0 +1,11 @@
+--- a/src/astonia.h	2026-10-13 04:03:46.654417181 +0000
++++ b/src/astonia.h	2026-10-13 04:03:46.659953421 +0000
+@@ -38,7 +38,7 @@
+ 
+ #define SDL_FAST_MALLOC // will use the C library instead of the error-checking client version
+ 
+-#define MAXSPRITE 250000
++#define MAXSPRITE 1000000 // highest sprite number + 1; character models use 100000 + model * 1000 (models 0-899)
+ 
+ #define TICKS  24 // ticks (game data updates) per second
+ #define FRAMES (frames_per_second) // frames (display updates) per second

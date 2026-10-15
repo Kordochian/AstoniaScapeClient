@@ -1,0 +1,84 @@
+From ce1750312acd58938612a590f91680859ac333c6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 07:39:50 +0000
+Subject: [PATCH 2/2] Draw the Options button as a stone plate like Exit, Help
+ and Questlog
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ src/gui/display.c     | 22 +++++++++++++++++++---
+ src/gui/gui_buttons.c |  2 +-
+ src/gui/gui_private.h |  3 ++-
+ 3 files changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/src/gui/display.c b/src/gui/display.c
+index 0564966..c40ef8d 100644
+--- a/src/gui/display.c
++++ b/src/gui/display.c
+@@ -41,6 +41,24 @@ void display_wear_lock(void)
+ 	save_options();
+ }
+ 
++// "Options" button in the top bar, drawn like the Exit, Help and Questlog plates
++static void display_options_button(void)
++{
++	int sx = dotx(DOT_TOP) + OPTIONS_BUT_X, sy = doty(DOT_TOP) + 7;
++	int ex = sx + OPTIONS_BUT_W - 1, ey = sy + 11;
++	int lit = (butsel == BUT_OPTIONS || options_is_open()) ? 2 : 0;
++
++	// dark outline, then a stone plate that is lighter at the top
++	render_rect(sx - 1, sy - 1, ex + 2, ey + 2, IRGB(1, 1, 1));
++	for (int y = sy; y <= ey; y++) {
++		int t = (y - sy) * 5 / (ey - sy);
++		render_rect(sx, y, ex + 1, y + 1, IRGB(17 - t + lit, 16 - t + lit, 14 - t + lit));
++	}
++	render_line(sx, sy, ex, sy, IRGB(15 + lit, 14 + lit, 12 + lit));
++
++	render_text(sx + OPTIONS_BUT_W / 2, sy + 1, blackcolor, RENDER_ALIGN_CENTER, "Options");
++}
++
+ void display_wear(void)
+ {
+ 	int b;
+@@ -139,9 +157,7 @@ void display_wear(void)
+ 	render_text(butx(BUT_WEA_LCK) + 6, buty(BUT_WEA_LCK) - 4, textcolor, RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
+ 	    gear_lock ? "Gear locked" : "Gear free");
+ 
+-	render_text(dotx(DOT_TOP) + OPTIONS_BUT_X, doty(DOT_TOP) + 9,
+-	    (butsel == BUT_OPTIONS || options_is_open()) ? whitecolor : textcolor, RENDER_TEXT_SMALL | RENDER_TEXT_FRAMED,
+-	    "Options");
++	display_options_button();
+ }
+ 
+ void display_look(void)
+diff --git a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+index c6e614f..01c074d 100644
+--- a/src/gui/gui_buttons.c
++++ b/src/gui/gui_buttons.c
+@@ -418,7 +418,7 @@ static void detect_hover_target(void)
+ 	    mousey <= doty(DOT_TOP) + 18) {
+ 		butsel = BUT_EXIT;
+ 	}
+-	if (mousex >= dotx(DOT_TOP) + OPTIONS_BUT_X - 2 && mousex <= dotx(DOT_TOP) + OPTIONS_BUT_X + 34 &&
++	if (mousex >= dotx(DOT_TOP) + OPTIONS_BUT_X && mousex < dotx(DOT_TOP) + OPTIONS_BUT_X + OPTIONS_BUT_W &&
+ 	    mousey >= doty(DOT_TOP) + 7 && mousey <= doty(DOT_TOP) + 18) {
+ 		butsel = BUT_OPTIONS;
+ 	}
+diff --git a/src/gui/gui_private.h b/src/gui/gui_private.h
+index fdd2eca..7d7fb58 100644
+--- a/src/gui/gui_private.h
++++ b/src/gui/gui_private.h
+@@ -65,7 +65,8 @@
+ // BUT_HELP_INDEX is 102
+ 
+ #define BUT_OPTIONS   103
+-#define OPTIONS_BUT_X 652 // "Options" in the top bar, left of Exit
++#define OPTIONS_BUT_X 656 // "Options" plate in the top bar, left of Exit
++#define OPTIONS_BUT_W 44
+ 
+ #define MAX_BUT 104
+ 
+-- 
+2.43.0
+

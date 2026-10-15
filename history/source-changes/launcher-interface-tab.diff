@@ -1,0 +1,217 @@
+--- orig.cs	2026-10-12 19:08:28.083402019 +0000
++++ AstoniaLauncher.cs	2026-10-12 19:09:04.762839619 +0000
+@@ -10,7 +10,7 @@
+ using System.Windows.Forms;
+ 
+ [assembly: System.Reflection.AssemblyTitle("Astonia Launcher")]
+-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
++[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+ 
+ class Profile
+ {
+@@ -69,6 +69,19 @@
+     TextBox tbServer, tbPort, tbUser, tbPass, tbWidth, tbHeight, tbExtra, tbMonitor, tbFps, tbThreads, tbPreview;
+     CheckBox chkRemember;
+     readonly List<CheckBox> optionBoxes = new List<CheckBox>();
++
++    // Interface tab: also kept in the client's settings.ini (see src/gui/options.c, panels.c)
++    static readonly string[] gfxNames = { "Auto (largest)", "1x (see the most)", "2x", "3x", "4x" };
++    static readonly int[] worldZooms = { 100, 125, 150, 175, 200, 250, 300 };
++    static readonly int[] uiSizes = { 50, 60, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200 };
++    static readonly int[] panelScales = { 75, 90, 100, 110, 125, 150, 175, 200 };
++    static readonly string[] panelKeys = { "level", "equipment", "menu", "skills", "status", "chat", "inventory" };
++    static readonly string[] panelNames = { "Level", "Equipment", "Menu", "Skills", "Effects", "Chat", "Inventory" };
++    static readonly string[] chatNames = { "As \"Large text\"", "Normal", "Large" };
++    ComboBox cbGfx, cbWorld, cbUi, cbChat;
++    readonly ComboBox[] cbScale = new ComboBox[7];
++    CheckBox chkLocked;
++    bool resetLayout; // remove the saved panel positions and sizes at the next save
+     ToolTip tips = new ToolTip();
+     bool loading;
+     string displayLoaded = ""; // display settings as last read from or written to settings.ini
+@@ -101,11 +114,13 @@
+         var tabs = new TabControl { Left = 8, Top = 46, Width = 404, Height = 386 };
+         var tLogin = new TabPage("Login");
+         var tOptions = new TabPage("Client options");
+-        tabs.TabPages.Add(tLogin); tabs.TabPages.Add(tOptions);
++        var tInterface = new TabPage("Interface");
++        tabs.TabPages.Add(tLogin); tabs.TabPages.Add(tOptions); tabs.TabPages.Add(tInterface);
+         Controls.Add(tabs);
+ 
+         BuildLoginTab(tLogin);
+         BuildOptionsTab(tOptions);
++        BuildInterfaceTab(tInterface);
+ 
+         var bPlay = new Button { Text = "Play", Left = 256, Top = 442, Width = 75, Height = 28 };
+         bPlay.Click += delegate { Play(); };
+@@ -194,6 +209,76 @@
+         t.Controls.Add(tbPreview);
+     }
+ 
++    static ComboBox AddCombo(Control parent, int left, int y, int width, IEnumerable<string> items)
++    {
++        var cb = new ComboBox { Left = left, Top = y, Width = width, DropDownStyle = ComboBoxStyle.DropDownList };
++        foreach (var i in items) cb.Items.Add(i);
++        cb.SelectedIndex = 0;
++        parent.Controls.Add(cb);
++        return cb;
++    }
++
++    static IEnumerable<string> Percents(int[] values)
++    {
++        foreach (int v in values) yield return v + "%";
++    }
++
++    // index of the value closest to v
++    static int Nearest(int[] values, int v)
++    {
++        int best = 0;
++        for (int i = 1; i < values.Length; i++) if (Math.Abs(values[i] - v) < Math.Abs(values[best] - v)) best = i;
++        return best;
++    }
++
++    void BuildInterfaceTab(TabPage t)
++    {
++        int y = 10;
++        AddLabel(t, "Graphics size:", y);
++        cbGfx = AddCombo(t, 106, y, 150, gfxNames);
++        tips.SetToolTip(cbGfx, "Makes everything larger, map and interface. Used when the client starts.");
++        y += 30; AddLabel(t, "World zoom:", y);
++        cbWorld = AddCombo(t, 106, y, 80, Percents(worldZooms));
++        tips.SetToolTip(cbWorld, "Makes only the map larger; the panels keep their size.");
++        y += 30; AddLabel(t, "Interface size:", y);
++        cbUi = AddCombo(t, 106, y, 80, Percents(uiSizes));
++        tips.SetToolTip(cbUi, "Makes all panels larger or smaller at once. Text gets blurry below 100%.");
++        chkLocked = new CheckBox { Text = "Lock panels (no dragging)", Left = 200, Top = y, Width = 185 };
++        t.Controls.Add(chkLocked);
++
++        y += 34;
++        var g = new GroupBox { Text = "Panel scale (text, items and buttons grow together)", Left = 8, Top = y, Width = 380, Height = 128 };
++        t.Controls.Add(g);
++        for (int i = 0; i < 7; i++)
++        {
++            int col = i / 4, row = i % 4;
++            g.Controls.Add(new Label { Text = panelNames[i] + ":", Left = 10 + col * 190, Top = 24 + row * 25, Width = 76 });
++            cbScale[i] = AddCombo(g, 88 + col * 190, 21 + row * 25, 70, Percents(panelScales));
++        }
++
++        y += 136; AddLabel(t, "Chat text:", y);
++        cbChat = AddCombo(t, 106, y, 150, chatNames);
++        tips.SetToolTip(cbChat, "Font size of the chat. Changing it in game clears the chat.");
++
++        y += 34;
++        var bReset = new Button { Text = "Reset panel layout", Left = 106, Top = y, Width = 150 };
++        bReset.Click += delegate
++        {
++            resetLayout = true;
++            foreach (var cb in cbScale) cb.SelectedIndex = Nearest(panelScales, 100);
++            MessageBox.Show("The panels go back to their default places, sizes and scales when you press Save or Play.", Text);
++        };
++        tips.SetToolTip(bReset, "Puts every panel back where it started, at its normal size.");
++        t.Controls.Add(bReset);
++
++        y += 32;
++        t.Controls.Add(new Label
++        {
++            Text = "These are the same settings as in the in-game Options window. Panels are moved by dragging their title and resized by the grip in their corner.",
++            Left = 10, Top = y, Width = 380, Height = 36, ForeColor = SystemColors.GrayText
++        });
++    }
++
+     static void AddLabel(Control parent, string text, int y) { parent.Controls.Add(new Label { Text = text, Left = 10, Top = y + 3, Width = 96 }); }
+ 
+     TextBox AddField(Control parent, string label, int y, int width)
+@@ -436,11 +521,31 @@
+         return Path.Combine(baseDir, "bin", "data", "settings.ini");
+     }
+ 
+-    string DisplayState() { return cbDisplay.SelectedIndex + "|" + tbWidth.Text.Trim() + "|" + tbHeight.Text.Trim(); }
++    string DisplayState()
++    {
++        var sb = new StringBuilder();
++        sb.Append(cbDisplay.SelectedIndex).Append('|').Append(tbWidth.Text.Trim()).Append('|').Append(tbHeight.Text.Trim());
++        sb.Append('|').Append(cbGfx.SelectedIndex).Append('|').Append(cbWorld.SelectedIndex).Append('|').Append(cbUi.SelectedIndex);
++        sb.Append('|').Append(chkLocked.Checked).Append('|').Append(cbChat.SelectedIndex).Append('|').Append(resetLayout);
++        foreach (var cb in cbScale) sb.Append('|').Append(cb.SelectedIndex);
++        return sb.ToString();
++    }
++
++    // settings.ini keys the launcher writes; panel_* positions only when the layout is reset
++    bool Managed(string k)
++    {
++        if (k == "display_mode" || k == "width" || k == "height") return true;
++        if (k == "zoom" || k == "world_zoom" || k == "ui_size" || k == "ui_locked" || k == "chat_text") return true;
++        if (k.StartsWith("pscale_")) return true;
++        return resetLayout && k.StartsWith("panel_");
++    }
+ 
+     void LoadDisplay()
+     {
+         string mode = "", w = "", h = "", path = SettingsPath();
++        int gfx = 0, world = 100, ui = 100, locked = 0, chat = -1, n;
++        var scale = new int[7];
++        for (int i = 0; i < 7; i++) scale[i] = 100;
+         try
+         {
+             if (File.Exists(path))
+@@ -453,6 +558,17 @@
+                     if (k == "display_mode") mode = v;
+                     else if (k == "width") w = v;
+                     else if (k == "height") h = v;
++                    else if (!int.TryParse(v, out n)) continue;
++                    else if (k == "zoom") gfx = Math.Max(0, Math.Min(4, n));
++                    else if (k == "world_zoom") world = n;
++                    else if (k == "ui_size") ui = n;
++                    else if (k == "ui_locked") locked = n;
++                    else if (k == "chat_text") chat = Math.Max(-1, Math.Min(1, n));
++                    else if (k.StartsWith("pscale_"))
++                    {
++                        int i = Array.IndexOf(panelKeys, k.Substring(7));
++                        if (i >= 0) scale[i] = n;
++                    }
+                 }
+             }
+         }
+@@ -461,6 +577,13 @@
+         loading = true;
+         cbDisplay.SelectedIndex = Math.Max(0, Array.IndexOf(displayKeys, mode));
+         tbWidth.Text = w; tbHeight.Text = h;
++        cbGfx.SelectedIndex = gfx;
++        cbWorld.SelectedIndex = Nearest(worldZooms, world);
++        cbUi.SelectedIndex = Nearest(uiSizes, ui);
++        chkLocked.Checked = locked != 0;
++        cbChat.SelectedIndex = chat + 1;
++        for (int i = 0; i < 7; i++) cbScale[i].SelectedIndex = Nearest(panelScales, scale[i]);
++        resetLayout = false;
+         loading = was;
+         UpdateEnabled();
+         displayLoaded = DisplayState();
+@@ -487,7 +610,7 @@
+                 {
+                     int eq = raw.IndexOf('=');
+                     string k = eq < 0 ? "" : raw.Substring(0, eq).Trim();
+-                    if (k != "display_mode" && k != "width" && k != "height") lines.Add(raw);
++                    if (!Managed(k)) lines.Add(raw);
+                 }
+             }
+             else lines.Add("# Astonia client settings, changed with the in-game Options menu");
+@@ -496,8 +619,19 @@
+                 lines.Add("display_mode=" + displayKeys[mode]);
+                 if (mode != 2) { lines.Add("width=" + w); lines.Add("height=" + h); }
+             }
++            lines.Add("zoom=" + cbGfx.SelectedIndex);
++            lines.Add("world_zoom=" + worldZooms[cbWorld.SelectedIndex]);
++            lines.Add("ui_size=" + uiSizes[cbUi.SelectedIndex]);
++            lines.Add("ui_locked=" + (chkLocked.Checked ? 1 : 0));
++            if (cbChat.SelectedIndex > 0) lines.Add("chat_text=" + (cbChat.SelectedIndex - 1));
++            for (int i = 0; i < 7; i++)
++            {
++                int v = panelScales[cbScale[i].SelectedIndex];
++                if (v != 100) lines.Add("pscale_" + panelKeys[i] + "=" + v);
++            }
+             Directory.CreateDirectory(Path.GetDirectoryName(path));
+             File.WriteAllLines(path, lines.ToArray());
++            resetLayout = false;
+             displayLoaded = DisplayState();
+             return true;
+         }

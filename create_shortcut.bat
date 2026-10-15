@@ -1,0 +1,1 @@
+powershell "$s=(New-Object -COM WScript.Shell).CreateShortcut('%userprofile%\Desktop\Beta Client.lnk');$s.TargetPath='%~dp0\bin\moac.exe';$s.WorkingDirectory='%~dp0\';$s.Save()"

@@ -1,0 +1,5 @@
+#include "resource.h"
+
+IDI_MOAC ICON "res/moa3.ico"
+
+

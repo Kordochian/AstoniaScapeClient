@@ -1,0 +1,95 @@
+From 737e18e7dbc552ea63f1948924b3d3d2ef83403c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 07:52:49 +0000
+Subject: [PATCH] Options window: rounded corners and a see-through background
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ src/gui/options.c | 63 +++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 55 insertions(+), 8 deletions(-)
+
+diff --git a/src/gui/options.c b/src/gui/options.c
+index b6de5a0..64a7e09 100644
+--- a/src/gui/options.c
++++ b/src/gui/options.c
+@@ -551,6 +551,60 @@ static void draw_button(int sx, int sy, const char *text, int enabled, int hover
+ 	render_text(sx + BTN_W / 2, sy + 3, enabled ? whitecolor : graycolor, RENDER_ALIGN_CENTER, text);
+ }
+ 
++#define RADIUS 10 // corner radius of the window
++
++// How far row i of a rounded rectangle h rows high is indented at its corners
++static int corner_inset(int i, int h)
++{
++	int j = i < h - 1 - i ? i : h - 1 - i;
++	float dy;
++
++	if (j >= RADIUS) {
++		return 0;
++	}
++	dy = (float)RADIUS - (float)j - 0.5f;
++	return (int)((float)RADIUS - SDL_sqrtf((float)(RADIUS * RADIUS) - dy * dy) + 0.5f);
++}
++
++// Window with rounded corners, a see-through body and a title bar of title_h rows.
++// Drawn one row at a time so no pixel is blended twice.
++static void draw_panel(int x, int y, int w, int h, int title_h)
++{
++	unsigned short border = IRGB(20, 16, 8);
++	int i, in, edge;
++
++	// shadow, 4 pixels down and right, only where the window does not cover it
++	for (i = 0; i < h; i++) {
++		int sx = x + 4 + corner_inset(i, h);
++		if (i + 4 < h && sx < x + w - corner_inset(i + 4, h)) {
++			sx = x + w - corner_inset(i + 4, h);
++		}
++		render_rect_alpha(sx, y + 4 + i, x + 4 + w - corner_inset(i, h), y + 5 + i, blackcolor, 90);
++	}
++
++	for (i = 0; i < h; i++) {
++		in = corner_inset(i, h);
++		if (i < title_h) {
++			render_rect_alpha(x + in, y + i, x + w - in, y + i + 1, IRGB(9, 7, 4), 225);
++		} else {
++			render_rect_alpha(x + in, y + i, x + w - in, y + i + 1, IRGB(2, 2, 2), 190);
++		}
++
++		// outline: top, bottom and title separator rows are solid, the others get their
++		// edge pixels, widened where the corner curve steps by more than one pixel
++		if (i == 0 || i == h - 1 || i == title_h - 1) {
++			render_rect(x + in, y + i, x + w - in, y + i + 1, border);
++			continue;
++		}
++		edge = corner_inset(i < h / 2 ? i - 1 : i + 1, h);
++		if (edge < in + 1) {
++			edge = in + 1;
++		}
++		render_rect(x + in, y + i, x + edge, y + i + 1, border);
++		render_rect(x + w - edge, y + i, x + w - in, y + i + 1, border);
++	}
++}
++
+ void options_display(void)
+ {
+ 	int px, py, hov, pending, best, dw, dh;
+@@ -569,14 +623,7 @@ void options_display(void)
+ 	render_push_clip();
+ 	render_set_clip(0, 0, XRES, YRES);
+ 
+-	render_rect_alpha(px + 4, py + 4, px + PW + 4, py + PH + 4, blackcolor, 120); // shadow
+-	render_rect_alpha(px, py, px + PW, py + PH, IRGB(3, 3, 3), 235);
+-	render_rect(px, py, px + PW, py + 17, IRGB(9, 7, 4));
+-	render_line(px, py, px + PW, py, IRGB(20, 16, 8));
+-	render_line(px, py + 17, px + PW, py + 17, IRGB(20, 16, 8));
+-	render_line(px, py + PH, px + PW, py + PH, IRGB(20, 16, 8));
+-	render_line(px, py, px, py + PH, IRGB(20, 16, 8));
+-	render_line(px + PW, py, px + PW, py + PH + 1, IRGB(20, 16, 8));
++	draw_panel(px, py, PW + 1, PH + 1, 18);
+ 
+ 	render_text(px + PW / 2, py + 4, whitecolor, RENDER_ALIGN_CENTER, "Options");
+ 	render_text(px + PW - 11, py + 4, hov == H_CLOSE ? whitecolor : lightgraycolor, RENDER_ALIGN_CENTER, "X");
+-- 
+2.43.0
+

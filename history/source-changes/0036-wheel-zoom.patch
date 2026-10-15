@@ -1,0 +1,54 @@
+diff --git a/src/gui/gui_input.c b/src/gui/gui_input.c
+index 16bae0c..498ec88 100644
+--- a/src/gui/gui_input.c
++++ b/src/gui/gui_input.c
+@@ -538,9 +538,7 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 			break;
+ 		}
+ 
+-		mx = pnl_mx(PNL_CHAT);
+-		my = pnl_my(PNL_CHAT);
+-		if (mx >= dotx(DOT_TXT) && mx < dotx(DOT_TX2) && my >= doty(DOT_TXT) && my < doty(DOT_TX2)) { // chat
++		if (pnl_at(mousex, mousey) == PNL_CHAT) { // anywhere over the chat panel: only the chat scrolls
+ 			while (delta > 0) {
+ 				render_text_lineup();
+ 				render_text_lineup();
+@@ -571,6 +569,38 @@ void gui_sdl_mouseproc(float x, float y, int what)
+ 			break;
+ 		}
+ 
++		// over the world: zoom it in (wheel up) or out, in the Options window's 5% steps
++		if (gui_point_in_map(mousex, mousey)) {
++			int z = sdl_world_zoom, zmin = sdl_world_min_zoom();
++
++			// below the server's view range the world can't zoom out any further
++			if (zmin < WORLD_ZOOM_MIN) {
++				zmin = WORLD_ZOOM_MIN;
++			}
++			if (z < zmin) {
++				z = zmin;
++			}
++			while (delta > 0) {
++				z += 5;
++				delta--;
++			}
++			while (delta < 0) {
++				z -= 5;
++				delta++;
++			}
++			if (z < zmin) {
++				z = zmin;
++			}
++			if (z > WORLD_ZOOM_MAX) {
++				z = WORLD_ZOOM_MAX;
++			}
++			if (z != sdl_world_zoom) {
++				sdl_set_world_zoom(z);
++				options_save();
++			}
++			break;
++		}
++
+ 		if (game_options & GO_WHEELSPEED) {
+ 			// Mousewheel toggles movement speed mode
+ 			// pspeed: 0=normal, 1=fast, 2=stealth

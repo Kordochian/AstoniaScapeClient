@@ -1,0 +1,545 @@
+Only in b: 0039-effects-tab.patch
+diff -ru a/src/client/client.c b/src/client/client.c
+--- a/src/client/client.c	2026-10-13 22:08:00.279253310 +0000
++++ b/src/client/client.c	2026-10-13 23:00:41.780633880 +0000
+@@ -25,7 +25,7 @@
+ #include "modder/modder.h"
+ #include "protocol.h"
+ 
+-#define CLIENT_PROTOCOL_VERSION 9 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window
++#define CLIENT_PROTOCOL_VERSION 10 // 4: server sends DIST 64, 5: skill list + skill XP, 6: furnace/anvil window, 7: its grid, 8: coloured speech, 9: workbench window, 10: effects tab
+ 
+ unsigned int display_gfx = 0;
+ uint32_t display_time = 0;
+@@ -93,6 +93,8 @@
+ DLL_EXPORT uint32_t experience_used;
+ DLL_EXPORT struct cskill cskill[MAXCSKILL];
+ DLL_EXPORT int cskill_active = 0;
++DLL_EXPORT struct effline effline[MAXEFFLINE];
++DLL_EXPORT int effline_cnt = 0;
+ DLL_EXPORT uint32_t mil_exp;
+ DLL_EXPORT uint32_t gold;
+ 
+@@ -183,6 +185,8 @@
+ 		experience_used = 0;
+ 		bzero(cskill, sizeof(cskill));
+ 		cskill_active = 0;
++		bzero(effline, sizeof(effline));
++		effline_cnt = 0;
+ 		mil_exp = 0;
+ 		gold = 0;
+ 
+diff -ru a/src/client/client.h b/src/client/client.h
+--- a/src/client/client.h	2026-10-13 22:08:00.367253315 +0000
++++ b/src/client/client.h	2026-10-13 23:00:32.707039909 +0000
+@@ -498,6 +498,18 @@
+ };
+ DLL_EXPORT extern struct cskill cskill[MAXCSKILL];
+ DLL_EXPORT extern int cskill_active; // server sent a skill list: skills level by use, no raising
++
++// effects tab (protocol 10): what levels, gear and attributes add up to, as lines from the server
++#define MAXEFFLINE     64
++#define EFFLINE_GROUPS 5 // melee, magic, attributes, gathering, stealth
++struct effline {
++	int group; // 0..EFFLINE_GROUPS-1
++	char label[24];
++	char value[16];
++	char desc[160]; // hover text
++};
++DLL_EXPORT extern struct effline effline[MAXEFFLINE];
++DLL_EXPORT extern int effline_cnt;
+ DLL_EXPORT extern uint32_t gold;
+ DLL_EXPORT extern tick_t tick;
+ extern int lasttick; // ticks in inbuf
+diff -ru a/src/client/client_private.h b/src/client/client_private.h
+--- a/src/client/client_private.h	2026-10-13 22:08:00.175253304 +0000
++++ b/src/client/client_private.h	2026-10-13 22:12:36.399074515 +0000
+@@ -58,7 +58,7 @@
+ #define SV_SKILLDEF         54 // protocol 5: skill list (server skillreg.c)
+ #define SV_SKILLXP          55 // protocol 5: level and XP of one skill
+ #define SV_CRAFTLIST        56 // protocol 6: furnace / anvil recipe list (server skilling.c)
+-#define SV_RESERVED4        57
++#define SV_EFFECTS          57 // protocol 10: effects tab lines (server skillreg.c)
+ #define SV_MOD1             58
+ #define SV_MOD2             59
+ #define SV_MOD3             60
+diff -ru a/src/client/protocol.c b/src/client/protocol.c
+--- a/src/client/protocol.c	2026-10-13 22:07:59.975253292 +0000
++++ b/src/client/protocol.c	2026-10-13 23:00:41.777800859 +0000
+@@ -916,6 +916,36 @@
+ 	}
+ }
+ 
++// copy a length-prefixed string, returns the offset behind it
++static int sv_str(unsigned char *buf, int p, int end, char *dst, int size)
++{
++	int l = p < end ? buf[p] : 0;
++
++	if (p + 1 + l > end) {
++		l = max(0, end - p - 1);
++	}
++	memcpy(dst, buf + p + 1, (size_t)min(l, size - 1));
++	dst[min(l, size - 1)] = 0;
++
++	return p + 1 + l;
++}
++
++// SV_EFFECTS: [57][length, 2 bytes][count] then per line [group][label][value][desc], each string length-prefixed
++static void sv_effects(unsigned char *buf, int len)
++{
++	int n, cnt = buf[3], p = 4;
++
++	for (n = 0; n < cnt && n < MAXEFFLINE && p < len; n++) {
++		effline[n].group = min((int)buf[p], EFFLINE_GROUPS - 1);
++		p++;
++		p = sv_str(buf, p, len, effline[n].label, sizeof(effline[n].label));
++		p = sv_str(buf, p, len, effline[n].value, sizeof(effline[n].value));
++		p = sv_str(buf, p, len, effline[n].desc, sizeof(effline[n].desc));
++	}
++	effline_cnt = n;
++	update_skltab = 1;
++}
++
+ static void sv_mil_exp(unsigned char *buf)
+ {
+ 	mil_exp = load_ulong(buf + 1);
+@@ -1325,6 +1355,10 @@
+ 				len = load_u16(buf + 1);
+ 				craftwin_receive(buf, (int)len);
+ 				break;
++			case SV_EFFECTS:
++				len = load_u16(buf + 1);
++				sv_effects(buf, (int)len);
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_process(buf);
+@@ -1560,6 +1594,9 @@
+ 			case SV_CRAFTLIST:
+ 				len = load_u16(buf + 1);
+ 				break;
++			case SV_EFFECTS:
++				len = load_u16(buf + 1);
++				break;
+ 
+ 			default:
+ 				len = (size_t)amod_prefetch(buf);
+diff -ru a/src/gui/display.c b/src/gui/display.c
+--- a/src/gui/display.c	2026-10-13 22:08:00.955253350 +0000
++++ b/src/gui/display.c	2026-10-13 23:00:32.703003875 +0000
+@@ -518,7 +518,7 @@
+ 	int cn = (int)map[MAPDX * MAPDY / 2].cn;
+ 
+ 	for (b = BUT_SKL_BEG; b <= BUT_SKL_END; b++) {
+-		int i = skloff + b - BUT_SKL_BEG;
++		int i = skl_row(b - BUT_SKL_BEG);
+ 		int x = butx(b);
+ 		int y = buty(b);
+ 		int yt = y - 4;
+@@ -555,11 +555,40 @@
+ 			continue;
+ 		}
+ 
++		if (skltab[i].v == STV_TABS) {
++			// Skills / Effects tabs: left half and right half of the line (click either), the open one
++			// drawn as a raised tab over a line that runs under the whole panel width
++			int tx[2], tw[2], t;
++			static const char *tname[2] = {"Skills", "Effects"};
++
++			tx[0] = bsx - 6;
++			tx[1] = bsx - 6 + SKLWIDTH / 2;
++			for (t = 0; t < 2; t++) {
++				int open = (t == 0) == (skl_view == SKLVIEW_SKILLS);
++
++				tw[t] = render_text_length(RENDER_TEXT_LARGE, tname[t]);
++				if (open) {
++					render_rect(tx[t] - 3, yt - 2, tx[t] + tw[t] + 3, bsy + 3, darkgraycolor);
++				}
++				render_text(tx[t], yt, open ? lightorangecolor : graycolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, tname[t]);
++			}
++			render_rect(bsx - 9, bsy + 3, bex, bsy + 4, darkgraycolor);
++			continue;
++		}
++
+ 		if (skltab[i].v == STV_HEADER) {
+ 			render_text(bsx - 6, yt, lightorangecolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
+ 			continue;
+ 		}
+ 
++		if (skltab[i].v == STV_EFFECT) {
++			if (skltab[i].curr >= 0 && skltab[i].curr < effline_cnt) {
++				render_text(bsx, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_LEFT, skltab[i].name);
++				render_text(bex, yt, textcolor, RENDER_TEXT_LARGE | RENDER_TEXT_RIGHT, effline[skltab[i].curr].value);
++			}
++			continue;
++		}
++
+ 		if (skltab[i].skill_id >= 0) {
+ 			// use-based skill: XP progress to the next level, on a dark track
+ 			render_rect(bsx, bsy, bex, bsy + 1, darkgraycolor);
+diff -ru a/src/gui/gui_buttons.c b/src/gui/gui_buttons.c
+--- a/src/gui/gui_buttons.c	2026-10-13 22:08:00.635253331 +0000
++++ b/src/gui/gui_buttons.c	2026-10-13 22:55:37.561381885 +0000
+@@ -86,7 +86,7 @@
+ 			but[b].flags |= BUTF_NOHIT;
+ 		}
+ 		for (b = BUT_SKL_BEG; b <= BUT_SKL_END; b++) {
+-			i = skloff + b - BUT_SKL_BEG;
++			i = skl_row(b - BUT_SKL_BEG);
+ 			if (i >= skltab_cnt || !skltab[i].button || skltab[i].barsize <= 0) {
+ 				but[b].flags |= BUTF_NOHIT;
+ 			} else {
+@@ -283,6 +283,7 @@
+ 		cursor = SDL_CUR_c_use;
+ 		break;
+ 	case CMD_OPTIONS:
++	case CMD_SKL_TAB:
+ 		cursor = SDL_CUR_c_use;
+ 		break;
+ 	case CMD_NOLOOK:
+@@ -557,7 +558,7 @@
+ 		for (i = 0; i <= BUT_SKL_END - BUT_SKL_BEG; i++) {
+ 			x = butx(i + BUT_SKL_BEG);
+ 			y = buty(i + BUT_SKL_BEG);
+-			if (mx > x + 10 && mx < x + SKLWIDTH && my > y - 5 && my < y + 5) {
++			if (mx > x + (i == 0 && cskill_active ? 0 : 10) && mx < x + SKLWIDTH && my > y - 5 && my < y + 5) { // the tab line reaches its left edge
+ 				sklsel2 = i;
+ 				break;
+ 			}
+@@ -576,7 +577,7 @@
+ 		} else if (butsel >= BUT_CON_BEG && butsel <= BUT_CON_END) {
+ 			consel = conoff * CONDX + butsel - BUT_CON_BEG;
+ 		} else if (butsel >= BUT_SKL_BEG && butsel <= BUT_SKL_END) {
+-			sklsel = skloff + butsel - BUT_SKL_BEG;
++			sklsel = skl_row(butsel - BUT_SKL_BEG);
+ 		}
+ 	}
+ }
+@@ -734,6 +735,19 @@
+ 		cmd_raise(skltab[sklsel].v);
+ 		break;
+ 
++	case CMD_SKL_TAB:
++		// left half of the tab line opens Skills, right half Effects
++		if (sklsel2 != -1) {
++			int view = pnl_mx(PNL_SKILLS) < butx(BUT_SKL_BEG + sklsel2) + 4 + SKLWIDTH / 2 ? SKLVIEW_SKILLS : SKLVIEW_EFFECTS;
++
++			if (view != skl_view) {
++				skl_view = view;
++				skloff = 0;
++				update_skltab = 1;
++			}
++		}
++		break;
++
+ 	case CMD_INV_OFF_UP:
+ 		set_invoff(0, invoff - 1);
+ 		break;
+@@ -1064,7 +1078,7 @@
+ 		return -1;
+ 	}
+ 	for (b = BUT_SKL_BEG; b < BUT_SKL_BEG + SKLDY && b <= BUT_SKL_END; b++) {
+-		i = skloff + b - BUT_SKL_BEG;
++		i = skl_row(b - BUT_SKL_BEG);
+ 		if (i >= skltab_cnt) {
+ 			continue;
+ 		}
+@@ -1179,6 +1193,10 @@
+ 			lcmd = CMD_SKL_RAISE;
+ 		}
+ 
++		if (sklsel2 != -1 && skltab && skl_row(sklsel2) < skltab_cnt && skltab[skl_row(sklsel2)].v == STV_TABS) {
++			lcmd = CMD_SKL_TAB;
++		}
++
+ 		if (hitsel[0]) {
+ 			lcmd = CMD_SAY_HITSEL;
+ 		}
+diff -ru a/src/gui/gui_inventory.c b/src/gui/gui_inventory.c
+--- a/src/gui/gui_inventory.c	2026-10-13 22:08:00.459253321 +0000
++++ b/src/gui/gui_inventory.c	2026-10-13 23:00:32.704657679 +0000
+@@ -166,21 +166,26 @@
+ 	return (int)(done * (SKLWIDTH - 10) / need);
+ }
+ 
+-// use-based skills (protocol 5): the skill list comes from the server, grouped, with an
+-// XP bar per skill and no raise buttons. Values that are not skills (weapon, armor,
+-// offense...) are listed first, as before.
+-static void set_skltab_skills(void)
+-{
+-	int use = 0, n, i, g, id, first;
+-	char is_skill[V_MAX];
+-	SKLTAB *st;
++// Skills / Effects tabs (protocol 10), switched by clicking the tab line at the top
++int skl_view = SKLVIEW_SKILLS;
+ 
+-	bzero(is_skill, sizeof(is_skill));
+-	for (id = 0; id < MAXCSKILL; id++) {
+-		if (cskill[id].used && cskill[id].value >= 0 && cskill[id].value < V_MAX) {
+-			is_skill[cskill[id].value] = 1;
+-		}
++// With the server's skill list the tab line (skltab[0]) stays on the first row and only the rows
++// under it scroll; the old panel scrolls every row.
++int skl_row(int r)
++{
++	if (cskill_active && skltab_cnt && r == 0) {
++		return 0;
+ 	}
++	return skloff + r;
++}
++
++static const char *effline_group_name[EFFLINE_GROUPS] = {"Melee", "Magic", "Attributes", "Gathering", "Stealth"};
++
++// values that are not skills (weapon, armor, offense...), as before; the Effects tab of a server without effect lines
++static void skltab_stats(int *use, const char *is_skill)
++{
++	int n, i, first;
++	SKLTAB *st;
+ 
+ 	for (first = 1, n = 0; n <= V_MAX; n++) {
+ 		i = get_skltab_index(n);
+@@ -194,47 +199,105 @@
+ 			continue;
+ 		}
+ 		if (first) {
+-			st = skltab_new(&use);
++			st = skltab_new(use);
+ 			st->v = STV_HEADER;
+ 			strcpy(st->name, "Stats");
+ 			first = 0;
+ 		}
+-		st = skltab_new(&use);
++		st = skltab_new(use);
+ 		st->v = i;
+ 		strcpy(st->name, game_skill[i].name);
+ 		st->base = (int)value[1][i];
+ 		st->curr = (int)value[0][i];
+ 	}
++}
+ 
+-	for (g = 0; g < CSKILL_GROUPS; g++) {
+-		for (first = 1, id = 0; id < MAXCSKILL; id++) {
+-			struct cskill *cs = cskill + id;
++// Effects tab: the server's lines, grouped
++static void skltab_effects(int *use)
++{
++	int g, n, first;
++	SKLTAB *st;
+ 
+-			if (!cs->used || cs->group != g || cs->level < 1) {
++	for (g = 0; g < EFFLINE_GROUPS; g++) {
++		for (first = 1, n = 0; n < effline_cnt; n++) {
++			if (effline[n].group != g) {
+ 				continue;
+ 			}
+ 			if (first) {
+-				if (use) {
+-					st = skltab_new(&use);
++				if (*use > 1) {
++					st = skltab_new(use);
+ 					st->v = STV_EMPTYLINE;
+ 				}
+-				st = skltab_new(&use);
++				st = skltab_new(use);
+ 				st->v = STV_HEADER;
+-				strcpy(st->name, cskill_group_name[g]);
++				strcpy(st->name, effline_group_name[g]);
+ 				first = 0;
+ 			}
+-			st = skltab_new(&use);
+-			st->skill_id = id;
+-			snprintf(st->name, sizeof(st->name), "%s", cs->name);
+-			if (cs->value >= 0 && cs->value < V_MAX) {
+-				st->v = cs->value;
+-				st->base = (int)value[1][cs->value];
+-				st->curr = (int)value[0][cs->value];
+-			} else {
+-				st->v = STV_SKILL;
+-				st->base = st->curr = cs->level;
++			st = skltab_new(use);
++			st->v = STV_EFFECT;
++			st->curr = n; // index into effline[]
++			snprintf(st->name, sizeof(st->name), "%s", effline[n].label);
++		}
++	}
++}
++
++// use-based skills (protocol 5): the skill list comes from the server, grouped, with an
++// XP bar per skill and no raise buttons. Skills show their own level only; what gear,
++// attributes and other skills add is on the Effects tab.
++static void set_skltab_skills(void)
++{
++	int use = 0, g, id, first;
++	char is_skill[V_MAX];
++	SKLTAB *st;
++
++	bzero(is_skill, sizeof(is_skill));
++	for (id = 0; id < MAXCSKILL; id++) {
++		if (cskill[id].used && cskill[id].value >= 0 && cskill[id].value < V_MAX) {
++			is_skill[cskill[id].value] = 1;
++		}
++	}
++
++	st = skltab_new(&use);
++	st->v = STV_TABS;
++
++	if (skl_view == SKLVIEW_EFFECTS) {
++		if (effline_cnt) {
++			skltab_effects(&use);
++		} else {
++			skltab_stats(&use, is_skill);
++		}
++	} else {
++		for (g = 0; g < CSKILL_GROUPS; g++) {
++			for (first = 1, id = 0; id < MAXCSKILL; id++) {
++				struct cskill *cs = cskill + id;
++
++				if (!cs->used || cs->group != g || cs->level < 1) {
++					continue;
++				}
++				if (first) {
++					if (use > 1) {
++						st = skltab_new(&use);
++						st->v = STV_EMPTYLINE;
++					}
++					st = skltab_new(&use);
++					st->v = STV_HEADER;
++					strcpy(st->name, cskill_group_name[g]);
++					first = 0;
++				}
++				st = skltab_new(&use);
++				st->skill_id = id;
++				snprintf(st->name, sizeof(st->name), "%s", cs->name);
++				if (cs->value >= 0 && cs->value < V_MAX && g == 0) {
++					// powers (Hitpoints, Endurance, Mana) keep current/base/max
++					st->v = cs->value;
++					st->base = (int)value[1][cs->value];
++					st->curr = (int)value[0][cs->value];
++				} else {
++					st->v = STV_SKILL;
++					st->base = st->curr = cs->level;
++				}
++				st->barsize = cskill_barsize(cs);
+ 			}
+-			st->barsize = cskill_barsize(cs);
+ 		}
+ 	}
+ 
+diff -ru a/src/gui/gui_private.h b/src/gui/gui_private.h
+--- a/src/gui/gui_private.h	2026-10-13 22:08:01.059253356 +0000
++++ b/src/gui/gui_private.h	2026-10-13 23:00:32.704130470 +0000
+@@ -197,11 +197,17 @@
+ #define CMD_WEAR_LOCK  81
+ #define CMD_HELP_INDEX 82
+ #define CMD_OPTIONS    83
++#define CMD_SKL_TAB    84 // click on the Skills / Effects tab line
+ 
+ #define STV_EMPTYLINE  -1
+ #define STV_JUSTAVALUE -2 // value is in curr
+ #define STV_HEADER     -3 // group title, text is in name
+-#define STV_SKILL      -4 // use-based skill without a value slot (Mining...), see skill_id
++#define STV_SKILL      -4 // use-based skill, shows its level only, see skill_id
++#define STV_TABS       -5 // Skills / Effects tab line (protocol 10)
++#define STV_EFFECT     -6 // effects tab line, curr is the index into effline[]
++
++#define SKLVIEW_SKILLS  0
++#define SKLVIEW_EFFECTS 1
+ 
+ #define TGT_MAP 1
+ #define TGT_ITM 2
+@@ -367,6 +373,8 @@
+ extern int display_help, display_quest;
+ extern int playersprite_override;
+ extern int update_skltab;
++extern int skl_view; // SKLVIEW_SKILLS or SKLVIEW_EFFECTS
++int skl_row(int r); // skltab index shown in skills panel row r (the tab line stays on row 0)
+ extern int show_look;
+ extern int control_override;
+ extern int vk_rbut, vk_lbut;
+diff -ru a/src/gui/hover.c b/src/gui/hover.c
+--- a/src/gui/hover.c	2026-10-13 22:08:00.727253337 +0000
++++ b/src/gui/hover.c	2026-10-13 23:00:32.705335791 +0000
+@@ -414,7 +414,7 @@
+ 	if (skltab && sklsel2 != -1 && tick - last_tick > HOVER_DELAY) {
+ 		int height = 0, width = 200;
+ 
+-		int v = skltab[sklsel2 + skloff].v;
++		int v = skltab[skl_row(sklsel2)].v;
+ 		if (v < 0 || v >= *game_v_max) {
+ 			return;
+ 		}
+@@ -453,7 +453,7 @@
+ 		int16_t offense = 0, defense = 0, speed = 0, armor = 0, weapon = 0;
+ 		int16_t immune = 0, spells = 0, tactics = 0, athlete = 0;
+ 
+-		int v = skltab[sklsel2 + skloff].v;
++		int v = skltab[skl_row(sklsel2)].v;
+ 		if (v < 0 || v >= *game_v_max) {
+ 			return;
+ 		}
+@@ -731,16 +731,62 @@
+ 	}
+ }
+ 
++// effects tab line (protocol 10): the server's explanation
++static void display_hover_effect(const struct effline *ce)
++{
++	int height = 10, width = 200;
++
++	if (ce->desc[0]) {
++		height += render_text_break_length(0, 0, width - 12, 0xffff, 0, ce->desc) + 4;
++	}
++
++	int sx = mousex + 8;
++	if (sx < dotx(DOT_TL)) {
++		sx = dotx(DOT_TL);
++	}
++	if (sx > dotx(DOT_BR) - width - 8) {
++		sx = dotx(DOT_BR) - width - 8;
++	}
++
++	int sy = mousey - height / 2 - 4;
++	if (sy < doty(DOT_TL)) {
++		sy = doty(DOT_TL);
++	}
++	if (sy > doty(DOT_BR) - height - 8) {
++		sy = doty(DOT_BR) - height - 8;
++	}
++
++	render_shaded_rect(sx, sy, sx + width + 8, sy + height + 8, 0x0000, 150);
++
++	sy += 4;
++	render_text_fmt(sx + 4, sy, 0xffff, 0, "%s: %s", ce->label, ce->value);
++	sy += 14;
++	if (ce->desc[0]) {
++		render_text_break(sx + 4, sy, sx + width - 8, 0xffff, 0, ce->desc);
++	}
++}
++
+ static void display_hover_skill(void)
+ {
+ 	if (capbut != -1) {
+ 		return; // dont display hover when dragging scrollthumb
+ 	}
+ 
+-	if (skltab && sklsel2 != -1 && sklsel2 + skloff < skltab_cnt && skltab[sklsel2 + skloff].skill_id >= 0 &&
+-	    skltab[sklsel2 + skloff].skill_id < MAXCSKILL) {
++	if (skltab && sklsel2 != -1 && skl_row(sklsel2) < skltab_cnt && skltab[skl_row(sklsel2)].v < 0 &&
++	    skltab[skl_row(sklsel2)].skill_id < 0) {
++		// tabs, headers and effect lines: only effect lines have a hover
++		const SKLTAB *st = &skltab[skl_row(sklsel2)];
++
++		if (st->v == STV_EFFECT && st->curr >= 0 && st->curr < effline_cnt && tick - last_tick > HOVER_DELAY) {
++			display_hover_effect(effline + st->curr);
++		}
++		return;
++	}
++
++	if (skltab && sklsel2 != -1 && skl_row(sklsel2) < skltab_cnt && skltab[skl_row(sklsel2)].skill_id >= 0 &&
++	    skltab[skl_row(sklsel2)].skill_id < MAXCSKILL) {
+ 		if (tick - last_tick > HOVER_DELAY) {
+-			display_hover_skill_xp(&skltab[sklsel2 + skloff]);
++			display_hover_skill_xp(&skltab[skl_row(sklsel2)]);
+ 		}
+ 		return;
+ 	}

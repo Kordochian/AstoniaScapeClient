@@ -1,0 +1,76 @@
+From a201cb806d2bf2c9a41afc329934d3bfb8340164 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 07:46:35 +0000
+Subject: [PATCH 3/3] Build the Options plate from the top bar picture's own
+ button texture
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NVC8aNAHSQBYiUjbHmQcw4
+---
+ src/gui/display.c | 46 ++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 34 insertions(+), 12 deletions(-)
+
+diff --git a/src/gui/display.c b/src/gui/display.c
+index c40ef8d..af9fd42 100644
+--- a/src/gui/display.c
++++ b/src/gui/display.c
+@@ -41,22 +41,44 @@ void display_wear_lock(void)
+ 	save_options();
+ }
+ 
+-// "Options" button in the top bar, drawn like the Exit, Help and Questlog plates
++// Copy a w x h piece of the top bar picture (sprite 999) at sprite position (fx, fy) to (x, y)
++static void copy_topbar(int fx, int fy, int x, int y, int w, int h)
++{
++	render_set_clip(x, y, x + w, y + h);
++	render_sprite(opt_sprite(999), x - fx, y - fy, RENDERFX_NORMAL_LIGHT, RENDER_ALIGN_NORMAL);
++}
++
++// "Options" button in the top bar. There is no blank button picture, so the plate is
++// pieced together from the plates in the top bar picture itself, column by column,
++// using only parts that the words Exit and Help leave free.
+ static void display_options_button(void)
+ {
+-	int sx = dotx(DOT_TOP) + OPTIONS_BUT_X, sy = doty(DOT_TOP) + 7;
+-	int ex = sx + OPTIONS_BUT_W - 1, ey = sy + 11;
+-	int lit = (butsel == BUT_OPTIONS || options_is_open()) ? 2 : 0;
++	// Exit plate: columns 704-723, rows 7-18. Rows 7-8 and 16-18 are free of text.
++	// For rows 9-15: free columns of the Exit plate, and of the Help plate (rows 23-29)
++	static const short mid_col[] = {
++	    710, 714, 716, 720, 721, 722, 706, 707, 708, 709, 710, 711, 712, 713, 714, 731, 732, 733, 734, 735, 736, 737};
++	static const short mid_row[] = {9, 9, 9, 9, 9, 9, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23};
++	int sx = dotx(DOT_TOP) + OPTIONS_BUT_X, sy = doty(DOT_TOP) + 7, w = OPTIONS_BUT_W, x;
++	unsigned int r = 12345;
+ 
+-	// dark outline, then a stone plate that is lighter at the top
+-	render_rect(sx - 1, sy - 1, ex + 2, ey + 2, IRGB(1, 1, 1));
+-	for (int y = sy; y <= ey; y++) {
+-		int t = (y - sy) * 5 / (ey - sy);
+-		render_rect(sx, y, ex + 1, y + 1, IRGB(17 - t + lit, 16 - t + lit, 14 - t + lit));
+-	}
+-	render_line(sx, sy, ex, sy, IRGB(15 + lit, 14 + lit, 12 + lit));
++	render_push_clip();
++	copy_topbar(704, 7, sx, sy, 3, 12); // left edge
++	for (x = 3; x < w - 1; x++) {
++		r = r * 1103515245u + 12345u;
++		copy_topbar(705 + (int)((r >> 16) % 18), 7, sx + x, sy, 1, 2);
++		r = r * 1103515245u + 12345u;
++		int m = (int)((r >> 16) % (sizeof(mid_col) / sizeof(mid_col[0])));
++		copy_topbar(mid_col[m], mid_row[m], sx + x, sy + 2, 1, 7);
++		r = r * 1103515245u + 12345u;
++		copy_topbar(705 + (int)((r >> 16) % 18), 16, sx + x, sy + 9, 1, 3);
++	}
++	copy_topbar(723, 7, sx + w - 1, sy, 1, 12); // right edge
++	render_pop_clip();
+ 
+-	render_text(sx + OPTIONS_BUT_W / 2, sy + 1, blackcolor, RENDER_ALIGN_CENTER, "Options");
++	if (butsel == BUT_OPTIONS || options_is_open()) {
++		render_rect_alpha(sx, sy, sx + w, sy + 12, whitecolor, 40);
++	}
++	render_text(sx + w / 2, sy + 2, blackcolor, RENDER_ALIGN_CENTER, "Options");
+ }
+ 
+ void display_wear(void)
+-- 
+2.43.0
+
