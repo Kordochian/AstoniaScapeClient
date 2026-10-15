@@ -2,5 +2,4 @@
 *.h text eol=lf
 res/*.zip filter=lfs diff=lfs merge=lfs -text
 res/*.png filter=lfs diff=lfs merge=lfs -text
-res/*.ico filter=lfs diff=lfs merge=lfs -text
 res/cursor/*.cur filter=lfs diff=lfs merge=lfs -text
