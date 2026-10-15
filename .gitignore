@@ -68,10 +68,7 @@ linux_client.tar.gz
 /out/
 vcpkg_installed/
 
-# Game assets come from the client package (gx1.zip etc.), not this repo
-/res/*.zip
-/res/*.png
-/res/cursor/
+# Game assets (res/*.zip, fonts, cursors) are in Git LFS, see .gitattributes
 /bin-msvc/
 *.bak
 *.orig
